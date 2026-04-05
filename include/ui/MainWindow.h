@@ -67,6 +67,10 @@ namespace utm::ui
             Gpu
         };
 
+        struct NetworkInterfacePerf;
+        struct GpuPerf;
+        struct PerformanceSubviewBinding;
+
         static LRESULT CALLBACK WndProcSetup(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
         static LRESULT CALLBACK WndProcThunk(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
 
@@ -81,6 +85,11 @@ namespace utm::ui
         std::wstring SectionTitleText() const;
         void SetActivePerformanceView(PerformanceView view);
         void UpdatePerformanceSubviewSelection();
+        void RebuildPerformanceSubviewNavigation();
+        bool HandleDynamicPerformanceSubviewCommand(UINT id);
+        const NetworkInterfacePerf *GetActiveNetworkInterface() const;
+        const GpuPerf *GetActiveGpu() const;
+        void NormalizeDynamicPerformanceSelection();
         void UpdatePerformanceMetrics();
         void UpdateNetworkAdapterInfo();
         void RefreshPerformancePanel();
@@ -133,6 +142,14 @@ namespace utm::ui
             std::deque<double> sharedHistory;
         };
 
+        struct PerformanceSubviewBinding
+        {
+            UINT commandId = 0;
+            PerformanceView view = PerformanceView::All;
+            size_t sourceIndex = 0;
+            std::wstring label;
+        };
+
         void HandleSnapshotUpdate();
         void RefreshProcessView();
 
@@ -176,6 +193,7 @@ namespace utm::ui
         HWND perfNavWifi_ = nullptr;
         HWND perfNavEthernet_ = nullptr;
         HWND perfNavGpu_ = nullptr;
+        std::vector<HWND> perfNavExtraButtons_;
         HWND perfCoreGrid_ = nullptr;
         HWND perfGraphCpu_ = nullptr;
         HWND perfGraphMemory_ = nullptr;
@@ -231,6 +249,11 @@ namespace utm::ui
         bool networkSamplingReady_ = false;
         std::vector<NetworkInterfacePerf> networkInterfaces_;
         std::vector<GpuPerf> gpuDevices_;
+        std::vector<PerformanceSubviewBinding> perfDynamicNavBindings_;
+        size_t perfStaticDynamicButtonCount_ = 0;
+        std::wstring perfDynamicNavSignature_;
+        size_t activeNetworkInterfaceIndex_ = 0;
+        size_t activeGpuIndex_ = 0;
 
         double totalCpuPercent_ = 0.0;
         double memoryPercent_ = 0.0;

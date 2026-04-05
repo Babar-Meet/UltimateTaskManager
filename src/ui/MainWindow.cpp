@@ -85,6 +85,8 @@ namespace
     constexpr int kIdPerfNavEthernet = 1045;
     constexpr int kIdPerfNavGpu = 1046;
     constexpr int kIdPerfDetails = 1047;
+    constexpr int kIdPerfNavDynamicBase = 1100;
+    constexpr int kIdPerfNavDynamicMax = 1199;
 
     constexpr int kIdQuickToolPortKillAll = 41000;
     constexpr int kIdQuickToolProcessKillAll = 41001;
@@ -242,6 +244,19 @@ namespace
             return 1;
         }
         return 2;
+    }
+
+    std::wstring NetworkTypeLabel(ULONG ifType)
+    {
+        if (ifType == IF_TYPE_IEEE80211)
+        {
+            return L"Wi-Fi";
+        }
+        if (ifType == IF_TYPE_ETHERNET_CSMACD)
+        {
+            return L"Ethernet";
+        }
+        return L"Network";
     }
 
     std::wstring SockaddrToIpString(const SOCKADDR *sockaddr)
@@ -1005,22 +1020,13 @@ namespace utm::ui
                 return 0;
             }
 
-            if (id == kIdPerfNavWifi)
+            if (id == kIdPerfNavWifi || id == kIdPerfNavEthernet || id == kIdPerfNavGpu ||
+                (id >= kIdPerfNavDynamicBase && id <= kIdPerfNavDynamicMax))
             {
-                SetActivePerformanceView(PerformanceView::Wifi);
-                return 0;
-            }
-
-            if (id == kIdPerfNavEthernet)
-            {
-                SetActivePerformanceView(PerformanceView::Ethernet);
-                return 0;
-            }
-
-            if (id == kIdPerfNavGpu)
-            {
-                SetActivePerformanceView(PerformanceView::Gpu);
-                return 0;
+                if (HandleDynamicPerformanceSubviewCommand(id))
+                {
+                    return 0;
+                }
             }
 
             if (id == kIdFilterEdit && code == EN_CHANGE)
@@ -1411,6 +1417,16 @@ namespace utm::ui
                 return reinterpret_cast<LRESULT>(cardBrush_);
             }
 
+            for (HWND extraButton : perfNavExtraButtons_)
+            {
+                if (control == extraButton)
+                {
+                    SetBkColor(dc, kCardColor);
+                    SetTextColor(dc, RGB(32, 48, 76));
+                    return reinterpret_cast<LRESULT>(cardBrush_);
+                }
+            }
+
             SetBkColor(dc, kMainBackgroundColor);
             SetTextColor(dc, RGB(28, 41, 63));
             return reinterpret_cast<LRESULT>(backgroundBrush_);
@@ -1430,8 +1446,6 @@ namespace utm::ui
             const bool scrollableCardsView =
                 activeSection_ == Section::Performance &&
                 (activePerformanceView_ == PerformanceView::All ||
-                 activePerformanceView_ == PerformanceView::Wifi ||
-                 activePerformanceView_ == PerformanceView::Ethernet ||
                  activePerformanceView_ == PerformanceView::Gpu);
 
             if (scrollableCardsView && perfCoreGrid_)
@@ -2125,6 +2139,7 @@ namespace utm::ui
         applyFont(quickKillSmartDeleteButton_, uiBoldFont_);
         applyFont(statusText_, uiFont_);
 
+        RebuildPerformanceSubviewNavigation();
         UpdateSidebarSelection();
         UpdatePerformanceSubviewSelection();
         ApplySectionVisibility();
@@ -2209,11 +2224,30 @@ namespace utm::ui
         perfNavY += 36;
         MoveWindow(perfNavDisk_, perfNavX, perfNavY, perfNavW, 30, TRUE);
         perfNavY += 36;
-        MoveWindow(perfNavWifi_, perfNavX, perfNavY, perfNavW, 30, TRUE);
-        perfNavY += 36;
-        MoveWindow(perfNavEthernet_, perfNavX, perfNavY, perfNavW, 30, TRUE);
-        perfNavY += 36;
-        MoveWindow(perfNavGpu_, perfNavX, perfNavY, perfNavW, 30, TRUE);
+
+        if (perfStaticDynamicButtonCount_ >= 1)
+        {
+            MoveWindow(perfNavWifi_, perfNavX, perfNavY, perfNavW, 30, TRUE);
+            perfNavY += 36;
+        }
+
+        if (perfStaticDynamicButtonCount_ >= 2)
+        {
+            MoveWindow(perfNavEthernet_, perfNavX, perfNavY, perfNavW, 30, TRUE);
+            perfNavY += 36;
+        }
+
+        if (perfStaticDynamicButtonCount_ >= 3)
+        {
+            MoveWindow(perfNavGpu_, perfNavX, perfNavY, perfNavW, 30, TRUE);
+            perfNavY += 36;
+        }
+
+        for (HWND extraButton : perfNavExtraButtons_)
+        {
+            MoveWindow(extraButton, perfNavX, perfNavY, perfNavW, 30, TRUE);
+            perfNavY += 36;
+        }
 
         MoveWindow(performancePlaceholder_, perfMainX, bodyTop, perfMainWidth, perfHeaderHeight, TRUE);
         MoveWindow(perfDetails_, perfMainX, perfDetailsTop, perfMainWidth, perfDetailsHeight, TRUE);
@@ -2239,15 +2273,15 @@ namespace utm::ui
             MoveWindow(perfGraphMemory_, perfMainX, perfGraphTop, perfMainWidth, memMainHeight, TRUE);
             MoveWindow(perfGraphGpu_, perfMainX, perfGraphTop + memMainHeight + perfGap, perfMainWidth, memSubHeight, TRUE);
         }
-        else if (activePerformanceView_ == PerformanceView::Disk)
+        else if (activePerformanceView_ == PerformanceView::Disk ||
+                 activePerformanceView_ == PerformanceView::Wifi ||
+                 activePerformanceView_ == PerformanceView::Ethernet)
         {
             const int perfHalfWidth = (perfMainWidth - perfGap) / 2;
             MoveWindow(perfGraphUpload_, perfMainX, perfGraphTop, perfHalfWidth, perfGraphHeight, TRUE);
             MoveWindow(perfGraphDownload_, perfMainX + perfHalfWidth + perfGap, perfGraphTop, perfMainWidth - perfHalfWidth - perfGap, perfGraphHeight, TRUE);
         }
-        else if (activePerformanceView_ == PerformanceView::Wifi ||
-                 activePerformanceView_ == PerformanceView::Ethernet ||
-                 activePerformanceView_ == PerformanceView::Gpu ||
+        else if (activePerformanceView_ == PerformanceView::Gpu ||
                  activePerformanceView_ == PerformanceView::All)
         {
             MoveWindow(perfCoreGrid_, perfMainX, perfGraphTop, perfMainWidth, perfGraphHeight, TRUE);
@@ -2312,9 +2346,13 @@ namespace utm::ui
         ShowWindow(perfNavCpu_, perfTab ? SW_SHOW : SW_HIDE);
         ShowWindow(perfNavMemory_, perfTab ? SW_SHOW : SW_HIDE);
         ShowWindow(perfNavDisk_, perfTab ? SW_SHOW : SW_HIDE);
-        ShowWindow(perfNavWifi_, perfTab ? SW_SHOW : SW_HIDE);
-        ShowWindow(perfNavEthernet_, perfTab ? SW_SHOW : SW_HIDE);
-        ShowWindow(perfNavGpu_, perfTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(perfNavWifi_, (perfTab && perfStaticDynamicButtonCount_ >= 1) ? SW_SHOW : SW_HIDE);
+        ShowWindow(perfNavEthernet_, (perfTab && perfStaticDynamicButtonCount_ >= 2) ? SW_SHOW : SW_HIDE);
+        ShowWindow(perfNavGpu_, (perfTab && perfStaticDynamicButtonCount_ >= 3) ? SW_SHOW : SW_HIDE);
+        for (HWND extraButton : perfNavExtraButtons_)
+        {
+            ShowWindow(extraButton, perfTab ? SW_SHOW : SW_HIDE);
+        }
         ShowWindow(perfDetails_, perfTab ? SW_SHOW : SW_HIDE);
 
         const bool showAll = perfTab && activePerformanceView_ == PerformanceView::All;
@@ -2328,9 +2366,9 @@ namespace utm::ui
         ShowWindow(perfGraphCpu_, showCpu ? SW_SHOW : SW_HIDE);
         ShowWindow(perfGraphMemory_, showMemory ? SW_SHOW : SW_HIDE);
         ShowWindow(perfGraphGpu_, showMemory ? SW_SHOW : SW_HIDE);
-        ShowWindow(perfCoreGrid_, (showCpu || showGpu || showAll || showWifi || showEthernet) ? SW_SHOW : SW_HIDE);
+        ShowWindow(perfCoreGrid_, (showCpu || showGpu || showAll) ? SW_SHOW : SW_HIDE);
 
-        const bool showDualThroughput = showDisk;
+        const bool showDualThroughput = showDisk || showWifi || showEthernet;
         ShowWindow(perfGraphUpload_, showDualThroughput ? SW_SHOW : SW_HIDE);
         ShowWindow(perfGraphDownload_, showDualThroughput ? SW_SHOW : SW_HIDE);
 
@@ -2366,8 +2404,6 @@ namespace utm::ui
 
         activePerformanceView_ = view;
         if (activePerformanceView_ == PerformanceView::All ||
-            activePerformanceView_ == PerformanceView::Wifi ||
-            activePerformanceView_ == PerformanceView::Ethernet ||
             activePerformanceView_ == PerformanceView::Gpu)
         {
             perfAllScrollOffset_ = 0;
@@ -2383,33 +2419,330 @@ namespace utm::ui
 
     void MainWindow::UpdatePerformanceSubviewSelection()
     {
-        int checked = kIdPerfNavAll;
-        switch (activePerformanceView_)
+        const auto isDynamicBindingSelected = [&](UINT commandId)
         {
-        case PerformanceView::All:
-            checked = kIdPerfNavAll;
-            break;
-        case PerformanceView::Cpu:
-            checked = kIdPerfNavCpu;
-            break;
-        case PerformanceView::Memory:
-            checked = kIdPerfNavMemory;
-            break;
-        case PerformanceView::Disk:
-            checked = kIdPerfNavDisk;
-            break;
-        case PerformanceView::Wifi:
-            checked = kIdPerfNavWifi;
-            break;
-        case PerformanceView::Ethernet:
-            checked = kIdPerfNavEthernet;
-            break;
-        case PerformanceView::Gpu:
-            checked = kIdPerfNavGpu;
-            break;
+            for (const auto &binding : perfDynamicNavBindings_)
+            {
+                if (binding.commandId != commandId)
+                {
+                    continue;
+                }
+
+                if (binding.view == PerformanceView::Gpu)
+                {
+                    return activePerformanceView_ == PerformanceView::Gpu && activeGpuIndex_ == binding.sourceIndex;
+                }
+
+                return activePerformanceView_ == binding.view && activeNetworkInterfaceIndex_ == binding.sourceIndex;
+            }
+
+            return false;
+        };
+
+        const auto setChecked = [](HWND button, bool checked)
+        {
+            if (button)
+            {
+                SendMessageW(button, BM_SETCHECK, checked ? BST_CHECKED : BST_UNCHECKED, 0);
+            }
+        };
+
+        setChecked(perfNavAll_, activePerformanceView_ == PerformanceView::All);
+        setChecked(perfNavCpu_, activePerformanceView_ == PerformanceView::Cpu);
+        setChecked(perfNavMemory_, activePerformanceView_ == PerformanceView::Memory);
+        setChecked(perfNavDisk_, activePerformanceView_ == PerformanceView::Disk);
+        setChecked(perfNavWifi_, isDynamicBindingSelected(kIdPerfNavWifi));
+        setChecked(perfNavEthernet_, isDynamicBindingSelected(kIdPerfNavEthernet));
+        setChecked(perfNavGpu_, isDynamicBindingSelected(kIdPerfNavGpu));
+
+        for (size_t i = 0; i < perfNavExtraButtons_.size(); ++i)
+        {
+            const UINT commandId = static_cast<UINT>(GetDlgCtrlID(perfNavExtraButtons_[i]));
+            setChecked(perfNavExtraButtons_[i], isDynamicBindingSelected(commandId));
+        }
+    }
+
+    const MainWindow::NetworkInterfacePerf *MainWindow::GetActiveNetworkInterface() const
+    {
+        const bool wifiView = activePerformanceView_ == PerformanceView::Wifi;
+        const bool ethernetView = activePerformanceView_ == PerformanceView::Ethernet;
+        if (!wifiView && !ethernetView)
+        {
+            return nullptr;
         }
 
-        CheckRadioButton(hwnd_, kIdPerfNavAll, kIdPerfNavGpu, checked);
+        const auto matchesView = [&](const NetworkInterfacePerf &iface)
+        {
+            return wifiView ? (iface.ifType == IF_TYPE_IEEE80211) : (iface.ifType != IF_TYPE_IEEE80211);
+        };
+
+        if (activeNetworkInterfaceIndex_ < networkInterfaces_.size())
+        {
+            const auto &candidate = networkInterfaces_[activeNetworkInterfaceIndex_];
+            if (matchesView(candidate))
+            {
+                return &candidate;
+            }
+        }
+
+        for (const auto &iface : networkInterfaces_)
+        {
+            if (matchesView(iface))
+            {
+                return &iface;
+            }
+        }
+
+        return nullptr;
+    }
+
+    const MainWindow::GpuPerf *MainWindow::GetActiveGpu() const
+    {
+        if (gpuDevices_.empty())
+        {
+            return nullptr;
+        }
+
+        if (activeGpuIndex_ < gpuDevices_.size())
+        {
+            return &gpuDevices_[activeGpuIndex_];
+        }
+
+        return &gpuDevices_.front();
+    }
+
+    void MainWindow::NormalizeDynamicPerformanceSelection()
+    {
+        if (activePerformanceView_ == PerformanceView::Wifi || activePerformanceView_ == PerformanceView::Ethernet)
+        {
+            const auto *iface = GetActiveNetworkInterface();
+            if (!iface)
+            {
+                activePerformanceView_ = PerformanceView::All;
+                activeNetworkInterfaceIndex_ = 0;
+            }
+            else
+            {
+                activeNetworkInterfaceIndex_ = static_cast<size_t>(iface - networkInterfaces_.data());
+            }
+        }
+
+        if (activePerformanceView_ == PerformanceView::Gpu)
+        {
+            const auto *gpu = GetActiveGpu();
+            if (!gpu)
+            {
+                activePerformanceView_ = PerformanceView::All;
+                activeGpuIndex_ = 0;
+            }
+            else
+            {
+                activeGpuIndex_ = static_cast<size_t>(gpu - gpuDevices_.data());
+            }
+        }
+    }
+
+    bool MainWindow::HandleDynamicPerformanceSubviewCommand(UINT id)
+    {
+        for (const auto &binding : perfDynamicNavBindings_)
+        {
+            if (binding.commandId != id)
+            {
+                continue;
+            }
+
+            const bool viewChanged = activePerformanceView_ != binding.view;
+            bool indexChanged = false;
+            if (binding.view == PerformanceView::Gpu)
+            {
+                indexChanged = activeGpuIndex_ != binding.sourceIndex;
+                activeGpuIndex_ = binding.sourceIndex;
+            }
+            else
+            {
+                indexChanged = activeNetworkInterfaceIndex_ != binding.sourceIndex;
+                activeNetworkInterfaceIndex_ = binding.sourceIndex;
+            }
+
+            if (viewChanged)
+            {
+                SetActivePerformanceView(binding.view);
+            }
+            else if (indexChanged)
+            {
+                NormalizeDynamicPerformanceSelection();
+                UpdatePerformanceSubviewSelection();
+                if (activeSection_ == Section::Performance)
+                {
+                    RefreshPerformancePanel();
+                }
+            }
+
+            return true;
+        }
+
+        return false;
+    }
+
+    void MainWindow::RebuildPerformanceSubviewNavigation()
+    {
+        if (!hwnd_ || !perfNavPanel_)
+        {
+            return;
+        }
+
+        std::vector<PerformanceSubviewBinding> desiredBindings;
+        size_t wifiIndex = 0;
+        size_t ethernetIndex = 0;
+        size_t otherIndex = 0;
+
+        for (size_t ifaceIndex = 0; ifaceIndex < networkInterfaces_.size(); ++ifaceIndex)
+        {
+            const auto &iface = networkInterfaces_[ifaceIndex];
+
+            PerformanceSubviewBinding binding{};
+            binding.view = iface.ifType == IF_TYPE_IEEE80211 ? PerformanceView::Wifi : PerformanceView::Ethernet;
+            binding.sourceIndex = ifaceIndex;
+
+            std::wstring prefix;
+            if (iface.ifType == IF_TYPE_IEEE80211)
+            {
+                prefix = L"Wi-Fi " + std::to_wstring(wifiIndex++);
+            }
+            else if (iface.ifType == IF_TYPE_ETHERNET_CSMACD)
+            {
+                prefix = L"Ethernet " + std::to_wstring(ethernetIndex++);
+            }
+            else
+            {
+                prefix = L"Network " + std::to_wstring(otherIndex++);
+            }
+
+            if (!iface.adapterName.empty() && iface.adapterName != L"N/A")
+            {
+                binding.label = prefix + L" | " + iface.adapterName;
+            }
+            else
+            {
+                binding.label = prefix;
+            }
+
+            desiredBindings.push_back(std::move(binding));
+        }
+
+        for (size_t gpuIndex = 0; gpuIndex < gpuDevices_.size(); ++gpuIndex)
+        {
+            PerformanceSubviewBinding binding{};
+            binding.view = PerformanceView::Gpu;
+            binding.sourceIndex = gpuIndex;
+            binding.label = L"GPU " + std::to_wstring(gpuIndex);
+            if (!gpuDevices_[gpuIndex].name.empty())
+            {
+                binding.label += L" | ";
+                binding.label += gpuDevices_[gpuIndex].name;
+            }
+            desiredBindings.push_back(std::move(binding));
+        }
+
+        std::wstringstream signatureBuilder;
+        signatureBuilder << desiredBindings.size() << L"|";
+        for (const auto &binding : desiredBindings)
+        {
+            signatureBuilder << static_cast<int>(binding.view) << L":" << binding.sourceIndex << L":" << binding.label << L";";
+        }
+
+        const std::wstring nextSignature = signatureBuilder.str();
+        if (nextSignature == perfDynamicNavSignature_)
+        {
+            NormalizeDynamicPerformanceSelection();
+            UpdatePerformanceSubviewSelection();
+            return;
+        }
+
+        for (HWND button : perfNavExtraButtons_)
+        {
+            if (button)
+            {
+                DestroyWindow(button);
+            }
+        }
+        perfNavExtraButtons_.clear();
+        perfDynamicNavBindings_.clear();
+
+        const HWND staticDynamicButtons[3] = {perfNavWifi_, perfNavEthernet_, perfNavGpu_};
+        const UINT staticDynamicIds[3] = {
+            static_cast<UINT>(kIdPerfNavWifi),
+            static_cast<UINT>(kIdPerfNavEthernet),
+            static_cast<UINT>(kIdPerfNavGpu)};
+
+        perfStaticDynamicButtonCount_ = (std::min)(static_cast<size_t>(3), desiredBindings.size());
+
+        for (size_t i = 0; i < 3; ++i)
+        {
+            if (i < desiredBindings.size())
+            {
+                SetWindowTextW(staticDynamicButtons[i], desiredBindings[i].label.c_str());
+
+                PerformanceSubviewBinding mapped = desiredBindings[i];
+                mapped.commandId = staticDynamicIds[i];
+                perfDynamicNavBindings_.push_back(std::move(mapped));
+            }
+            else
+            {
+                SetWindowTextW(staticDynamicButtons[i], L"");
+            }
+        }
+
+        const int maxExtraButtons = kIdPerfNavDynamicMax - kIdPerfNavDynamicBase + 1;
+        for (size_t i = 3; i < desiredBindings.size(); ++i)
+        {
+            const int dynamicOrdinal = static_cast<int>(i - 3);
+            if (dynamicOrdinal >= maxExtraButtons)
+            {
+                break;
+            }
+
+            const int commandId = kIdPerfNavDynamicBase + dynamicOrdinal;
+            HWND button = CreateWindowExW(
+                0,
+                L"BUTTON",
+                desiredBindings[i].label.c_str(),
+                WS_CHILD | WS_TABSTOP | BS_AUTORADIOBUTTON | BS_PUSHLIKE,
+                0,
+                0,
+                0,
+                0,
+                hwnd_,
+                MenuId(commandId),
+                instance_,
+                nullptr);
+
+            if (!button)
+            {
+                continue;
+            }
+
+            SendMessageW(button, WM_SETFONT, reinterpret_cast<WPARAM>(uiBoldFont_), TRUE);
+            perfNavExtraButtons_.push_back(button);
+
+            PerformanceSubviewBinding mapped = desiredBindings[i];
+            mapped.commandId = static_cast<UINT>(commandId);
+            perfDynamicNavBindings_.push_back(std::move(mapped));
+        }
+
+        perfDynamicNavSignature_ = nextSignature;
+        NormalizeDynamicPerformanceSelection();
+
+        if (activeSection_ == Section::Performance)
+        {
+            LayoutControls();
+        }
+        else
+        {
+            ApplySectionVisibility();
+        }
+
+        UpdatePerformanceSubviewSelection();
     }
 
     void MainWindow::SetActiveSection(Section section)
@@ -2430,6 +2763,7 @@ namespace utm::ui
         }
         else if (activeSection_ == Section::Performance)
         {
+            RebuildPerformanceSubviewNavigation();
             RefreshPerformancePanel();
         }
     }
@@ -2808,94 +3142,79 @@ namespace utm::ui
 
         case PerformanceView::Wifi:
         {
-            bool hasWifi = false;
-            size_t wifiIndex = 0;
-            for (const auto &iface : networkInterfaces_)
-            {
-                if (iface.ifType != IF_TYPE_IEEE80211)
-                {
-                    continue;
-                }
-
-                if (hasWifi)
-                {
-                    text << L"\r\n\r\n";
-                }
-
-                text << L"Wi-Fi " << wifiIndex << L": " << iface.adapterName << L"\r\n"
-                     << L"Upload: " << FormatNumber(iface.uploadMbps, iface.uploadMbps < 10.0 ? 2 : 1) << L" Mbps\r\n"
-                     << L"Download: " << FormatNumber(iface.downloadMbps, iface.downloadMbps < 10.0 ? 2 : 1) << L" Mbps\r\n"
-                     << L"IPv4: " << iface.ipv4 << L"\r\n"
-                     << L"IPv6: " << iface.ipv6;
-                hasWifi = true;
-                ++wifiIndex;
-            }
-
-            if (!hasWifi)
+            const auto *iface = GetActiveNetworkInterface();
+            if (!iface)
             {
                 text << L"No active Wi-Fi interfaces were detected.";
+            }
+            else
+            {
+                const size_t selectedIndex = static_cast<size_t>(iface - networkInterfaces_.data());
+                size_t wifiOrdinal = 0;
+                for (size_t i = 0; i <= selectedIndex && i < networkInterfaces_.size(); ++i)
+                {
+                    if (networkInterfaces_[i].ifType == IF_TYPE_IEEE80211)
+                    {
+                        ++wifiOrdinal;
+                    }
+                }
+
+                text << L"Wi-Fi " << (wifiOrdinal > 0 ? wifiOrdinal - 1 : 0) << L": " << iface->adapterName << L"\r\n"
+                     << L"Upload: " << FormatNumber(iface->uploadMbps, iface->uploadMbps < 10.0 ? 2 : 1) << L" Mbps\r\n"
+                     << L"Download: " << FormatNumber(iface->downloadMbps, iface->downloadMbps < 10.0 ? 2 : 1) << L" Mbps\r\n"
+                     << L"IPv4: " << iface->ipv4 << L"\r\n"
+                     << L"IPv6: " << iface->ipv6;
             }
             break;
         }
 
         case PerformanceView::Ethernet:
         {
-            bool hasEthernet = false;
-            size_t ethernetIndex = 0;
-            for (const auto &iface : networkInterfaces_)
-            {
-                if (iface.ifType != IF_TYPE_ETHERNET_CSMACD)
-                {
-                    continue;
-                }
-
-                if (hasEthernet)
-                {
-                    text << L"\r\n\r\n";
-                }
-
-                text << L"Ethernet " << ethernetIndex << L": " << iface.adapterName << L"\r\n"
-                     << L"Upload: " << FormatNumber(iface.uploadMbps, iface.uploadMbps < 10.0 ? 2 : 1) << L" Mbps\r\n"
-                     << L"Download: " << FormatNumber(iface.downloadMbps, iface.downloadMbps < 10.0 ? 2 : 1) << L" Mbps\r\n"
-                     << L"IPv4: " << iface.ipv4 << L"\r\n"
-                     << L"IPv6: " << iface.ipv6;
-                hasEthernet = true;
-                ++ethernetIndex;
-            }
-
-            if (!hasEthernet)
+            const auto *iface = GetActiveNetworkInterface();
+            if (!iface)
             {
                 text << L"No active Ethernet interfaces were detected.";
+            }
+            else
+            {
+                const size_t selectedIndex = static_cast<size_t>(iface - networkInterfaces_.data());
+                size_t ordinal = 0;
+                for (size_t i = 0; i <= selectedIndex && i < networkInterfaces_.size(); ++i)
+                {
+                    if (networkInterfaces_[i].ifType != IF_TYPE_IEEE80211)
+                    {
+                        ++ordinal;
+                    }
+                }
+
+                text << NetworkTypeLabel(iface->ifType) << L" " << (ordinal > 0 ? ordinal - 1 : 0) << L": " << iface->adapterName << L"\r\n"
+                     << L"Upload: " << FormatNumber(iface->uploadMbps, iface->uploadMbps < 10.0 ? 2 : 1) << L" Mbps\r\n"
+                     << L"Download: " << FormatNumber(iface->downloadMbps, iface->downloadMbps < 10.0 ? 2 : 1) << L" Mbps\r\n"
+                     << L"IPv4: " << iface->ipv4 << L"\r\n"
+                     << L"IPv6: " << iface->ipv6;
             }
             break;
         }
 
         case PerformanceView::Gpu:
         {
-            if (gpuDevices_.empty())
+            const auto *gpu = GetActiveGpu();
+            if (!gpu)
             {
                 text << L"No hardware GPU adapters were detected.";
                 break;
             }
 
-            for (size_t i = 0; i < gpuDevices_.size(); ++i)
-            {
-                const auto &gpu = gpuDevices_[i];
-                if (i > 0)
-                {
-                    text << L"\r\n\r\n";
-                }
-
-                text << L"GPU " << i << L": " << gpu.name << L"\r\n"
-                     << L"Utilization: " << static_cast<int>(gpu.utilizationPercent + 0.5) << L"%\r\n"
-                     << L"3D " << static_cast<int>(gpu.engine3dPercent + 0.5)
-                     << L"% | Copy " << static_cast<int>(gpu.engineCopyPercent + 0.5)
-                     << L"% | Decode " << static_cast<int>(gpu.engineDecodePercent + 0.5)
-                     << L"% | Encode " << static_cast<int>(gpu.engineEncodePercent + 0.5) << L"%\r\n"
-                     << L"Dedicated memory: " << FormatNumber(gpu.dedicatedUsedGb, 1) << L" / " << FormatNumber(gpu.dedicatedGb, 1) << L" GB\r\n"
-                     << L"Shared memory: " << FormatNumber(gpu.sharedUsedGb, 1) << L" / " << FormatNumber(gpu.sharedGb, 1) << L" GB\r\n"
-                     << L"Location: " << gpu.location;
-            }
+            const size_t gpuIndex = static_cast<size_t>(gpu - gpuDevices_.data());
+            text << L"GPU " << gpuIndex << L": " << gpu->name << L"\r\n"
+                 << L"Utilization: " << static_cast<int>(gpu->utilizationPercent + 0.5) << L"%\r\n"
+                 << L"3D " << static_cast<int>(gpu->engine3dPercent + 0.5)
+                 << L"% | Copy " << static_cast<int>(gpu->engineCopyPercent + 0.5)
+                 << L"% | Decode " << static_cast<int>(gpu->engineDecodePercent + 0.5)
+                 << L"% | Encode " << static_cast<int>(gpu->engineEncodePercent + 0.5) << L"%\r\n"
+                 << L"Dedicated memory: " << FormatNumber(gpu->dedicatedUsedGb, 1) << L" / " << FormatNumber(gpu->dedicatedGb, 1) << L" GB\r\n"
+                 << L"Shared memory: " << FormatNumber(gpu->sharedUsedGb, 1) << L" / " << FormatNumber(gpu->sharedGb, 1) << L" GB\r\n"
+                 << L"Location: " << gpu->location;
             break;
         }
         }
@@ -3186,13 +3505,13 @@ namespace utm::ui
             {
                 DWORD bufferSize = 0;
                 DWORD itemCount = 0;
-                PDH_STATUS status = PdhGetFormattedCounterArrayW(gpuCounter_, PDH_FMT_DOUBLE, &bufferSize, &itemCount, nullptr);
-                if ((status == ERROR_SUCCESS || status == PDH_MORE_DATA) && bufferSize > 0 && itemCount > 0)
+                PDH_STATUS counterStatus = PdhGetFormattedCounterArrayW(gpuCounter_, PDH_FMT_DOUBLE, &bufferSize, &itemCount, nullptr);
+                if ((counterStatus == ERROR_SUCCESS || counterStatus == PDH_MORE_DATA) && bufferSize > 0 && itemCount > 0)
                 {
                     std::vector<std::uint8_t> buffer(bufferSize);
                     auto *items = reinterpret_cast<PPDH_FMT_COUNTERVALUE_ITEM_W>(buffer.data());
-                    status = PdhGetFormattedCounterArrayW(gpuCounter_, PDH_FMT_DOUBLE, &bufferSize, &itemCount, items);
-                    if (status == ERROR_SUCCESS)
+                    counterStatus = PdhGetFormattedCounterArrayW(gpuCounter_, PDH_FMT_DOUBLE, &bufferSize, &itemCount, items);
+                    if (counterStatus == ERROR_SUCCESS)
                     {
                         for (DWORD i = 0; i < itemCount; ++i)
                         {
@@ -3342,6 +3661,15 @@ namespace utm::ui
             return;
         }
 
+        RebuildPerformanceSubviewNavigation();
+        const PerformanceView previousView = activePerformanceView_;
+        NormalizeDynamicPerformanceSelection();
+        if (previousView != activePerformanceView_ && activeSection_ == Section::Performance)
+        {
+            LayoutControls();
+        }
+        UpdatePerformanceSubviewSelection();
+
         UpdateDynamicScale(uploadScaleMbps_, uploadHistory_, 0.5, 1.25);
         UpdateDynamicScale(downloadScaleMbps_, downloadHistory_, 0.5, 1.25);
         UpdateDynamicScale(wifiUploadScaleMbps_, wifiUploadHistory_, 0.5, 1.25);
@@ -3374,21 +3702,76 @@ namespace utm::ui
             break;
         case PerformanceView::Wifi:
         {
-            const size_t wifiCount = std::count_if(networkInterfaces_.begin(), networkInterfaces_.end(), [](const NetworkInterfacePerf &iface)
-                                                   { return iface.ifType == IF_TYPE_IEEE80211; });
-            title = L"Wi-Fi | " + std::to_wstring(wifiCount) + L" adapter(s)";
+            const auto *iface = GetActiveNetworkInterface();
+            if (!iface)
+            {
+                title = L"Wi-Fi | No active adapter";
+                break;
+            }
+
+            const size_t selectedIndex = static_cast<size_t>(iface - networkInterfaces_.data());
+            size_t wifiOrdinal = 0;
+            for (size_t i = 0; i <= selectedIndex && i < networkInterfaces_.size(); ++i)
+            {
+                if (networkInterfaces_[i].ifType == IF_TYPE_IEEE80211)
+                {
+                    ++wifiOrdinal;
+                }
+            }
+
+            title = L"Wi-Fi " + std::to_wstring(wifiOrdinal > 0 ? wifiOrdinal - 1 : 0);
+            if (!iface->adapterName.empty())
+            {
+                title += L" | ";
+                title += iface->adapterName;
+            }
             break;
         }
         case PerformanceView::Ethernet:
         {
-            const size_t ethernetCount = std::count_if(networkInterfaces_.begin(), networkInterfaces_.end(), [](const NetworkInterfacePerf &iface)
-                                                       { return iface.ifType == IF_TYPE_ETHERNET_CSMACD; });
-            title = L"Ethernet | " + std::to_wstring(ethernetCount) + L" adapter(s)";
+            const auto *iface = GetActiveNetworkInterface();
+            if (!iface)
+            {
+                title = L"Network | No active adapter";
+                break;
+            }
+
+            const size_t selectedIndex = static_cast<size_t>(iface - networkInterfaces_.data());
+            size_t ordinal = 0;
+            for (size_t i = 0; i <= selectedIndex && i < networkInterfaces_.size(); ++i)
+            {
+                if (networkInterfaces_[i].ifType != IF_TYPE_IEEE80211)
+                {
+                    ++ordinal;
+                }
+            }
+
+            title = NetworkTypeLabel(iface->ifType) + L" " + std::to_wstring(ordinal > 0 ? ordinal - 1 : 0);
+            if (!iface->adapterName.empty())
+            {
+                title += L" | ";
+                title += iface->adapterName;
+            }
             break;
         }
         case PerformanceView::Gpu:
-            title = L"GPU | " + std::to_wstring(gpuDevices_.size()) + L" adapter(s)";
+        {
+            const auto *gpu = GetActiveGpu();
+            if (!gpu)
+            {
+                title = L"GPU | No adapter detected";
+                break;
+            }
+
+            const size_t gpuIndex = static_cast<size_t>(gpu - gpuDevices_.data());
+            title = L"GPU " + std::to_wstring(gpuIndex);
+            if (!gpu->name.empty())
+            {
+                title += L" | ";
+                title += gpu->name;
+            }
             break;
+        }
         }
         SetWindowTextW(performancePlaceholder_, title.c_str());
 
@@ -3418,7 +3801,7 @@ namespace utm::ui
         struct GraphConfig
         {
             const std::deque<double> *history = nullptr;
-            const wchar_t *title = L"";
+            std::wstring title;
             const wchar_t *unit = L"";
             COLORREF lineColor = RGB(37, 99, 235);
             double latest = 0.0;
@@ -3528,21 +3911,84 @@ namespace utm::ui
             }
             else if (activePerformanceView_ == PerformanceView::Wifi)
             {
-                cfg.history = &wifiUploadHistory_;
-                cfg.title = L"Wi-Fi Upload";
-                cfg.unit = L"Mbps";
-                cfg.lineColor = RGB(236, 150, 14);
-                cfg.latest = wifiUploadMbps_;
-                cfg.maxValue = (std::max)(0.5, wifiUploadScaleMbps_);
+                const auto *iface = GetActiveNetworkInterface();
+                if (iface)
+                {
+                    const size_t selectedIndex = static_cast<size_t>(iface - networkInterfaces_.data());
+                    size_t wifiOrdinal = 0;
+                    for (size_t i = 0; i <= selectedIndex && i < networkInterfaces_.size(); ++i)
+                    {
+                        if (networkInterfaces_[i].ifType == IF_TYPE_IEEE80211)
+                        {
+                            ++wifiOrdinal;
+                        }
+                    }
+
+                    cfg.history = &iface->uploadHistory;
+                    std::wstring title = L"Wi-Fi ";
+                    title += std::to_wstring(wifiOrdinal > 0 ? wifiOrdinal - 1 : 0);
+                    title += L" Upload";
+                    if (!iface->adapterName.empty())
+                    {
+                        title += L" | ";
+                        title += iface->adapterName;
+                    }
+                    cfg.title = title;
+                    cfg.unit = L"Mbps";
+                    cfg.lineColor = RGB(236, 150, 14);
+                    cfg.latest = iface->uploadMbps;
+                    cfg.maxValue = (std::max)(0.5, iface->uploadScaleMbps);
+                }
+                else
+                {
+                    cfg.history = &wifiUploadHistory_;
+                    cfg.title = L"Wi-Fi Upload";
+                    cfg.unit = L"Mbps";
+                    cfg.lineColor = RGB(236, 150, 14);
+                    cfg.latest = wifiUploadMbps_;
+                    cfg.maxValue = (std::max)(0.5, wifiUploadScaleMbps_);
+                }
             }
             else if (activePerformanceView_ == PerformanceView::Ethernet)
             {
-                cfg.history = &ethernetUploadHistory_;
-                cfg.title = L"Ethernet Upload";
-                cfg.unit = L"Mbps";
-                cfg.lineColor = RGB(236, 150, 14);
-                cfg.latest = ethernetUploadMbps_;
-                cfg.maxValue = (std::max)(0.5, ethernetUploadScaleMbps_);
+                const auto *iface = GetActiveNetworkInterface();
+                if (iface)
+                {
+                    const size_t selectedIndex = static_cast<size_t>(iface - networkInterfaces_.data());
+                    size_t ordinal = 0;
+                    for (size_t i = 0; i <= selectedIndex && i < networkInterfaces_.size(); ++i)
+                    {
+                        if (networkInterfaces_[i].ifType != IF_TYPE_IEEE80211)
+                        {
+                            ++ordinal;
+                        }
+                    }
+
+                    cfg.history = &iface->uploadHistory;
+                    std::wstring title = NetworkTypeLabel(iface->ifType);
+                    title += L" ";
+                    title += std::to_wstring(ordinal > 0 ? ordinal - 1 : 0);
+                    title += L" Upload";
+                    if (!iface->adapterName.empty())
+                    {
+                        title += L" | ";
+                        title += iface->adapterName;
+                    }
+                    cfg.title = title;
+                    cfg.unit = L"Mbps";
+                    cfg.lineColor = RGB(236, 150, 14);
+                    cfg.latest = iface->uploadMbps;
+                    cfg.maxValue = (std::max)(0.5, iface->uploadScaleMbps);
+                }
+                else
+                {
+                    cfg.history = &ethernetUploadHistory_;
+                    cfg.title = L"Ethernet Upload";
+                    cfg.unit = L"Mbps";
+                    cfg.lineColor = RGB(236, 150, 14);
+                    cfg.latest = ethernetUploadMbps_;
+                    cfg.maxValue = (std::max)(0.5, ethernetUploadScaleMbps_);
+                }
             }
             else
             {
@@ -3576,21 +4022,84 @@ namespace utm::ui
             }
             else if (activePerformanceView_ == PerformanceView::Wifi)
             {
-                cfg.history = &wifiDownloadHistory_;
-                cfg.title = L"Wi-Fi Download";
-                cfg.unit = L"Mbps";
-                cfg.lineColor = RGB(225, 76, 88);
-                cfg.latest = wifiDownloadMbps_;
-                cfg.maxValue = (std::max)(0.5, wifiDownloadScaleMbps_);
+                const auto *iface = GetActiveNetworkInterface();
+                if (iface)
+                {
+                    const size_t selectedIndex = static_cast<size_t>(iface - networkInterfaces_.data());
+                    size_t wifiOrdinal = 0;
+                    for (size_t i = 0; i <= selectedIndex && i < networkInterfaces_.size(); ++i)
+                    {
+                        if (networkInterfaces_[i].ifType == IF_TYPE_IEEE80211)
+                        {
+                            ++wifiOrdinal;
+                        }
+                    }
+
+                    cfg.history = &iface->downloadHistory;
+                    std::wstring title = L"Wi-Fi ";
+                    title += std::to_wstring(wifiOrdinal > 0 ? wifiOrdinal - 1 : 0);
+                    title += L" Download";
+                    if (!iface->adapterName.empty())
+                    {
+                        title += L" | ";
+                        title += iface->adapterName;
+                    }
+                    cfg.title = title;
+                    cfg.unit = L"Mbps";
+                    cfg.lineColor = RGB(225, 76, 88);
+                    cfg.latest = iface->downloadMbps;
+                    cfg.maxValue = (std::max)(0.5, iface->downloadScaleMbps);
+                }
+                else
+                {
+                    cfg.history = &wifiDownloadHistory_;
+                    cfg.title = L"Wi-Fi Download";
+                    cfg.unit = L"Mbps";
+                    cfg.lineColor = RGB(225, 76, 88);
+                    cfg.latest = wifiDownloadMbps_;
+                    cfg.maxValue = (std::max)(0.5, wifiDownloadScaleMbps_);
+                }
             }
             else if (activePerformanceView_ == PerformanceView::Ethernet)
             {
-                cfg.history = &ethernetDownloadHistory_;
-                cfg.title = L"Ethernet Download";
-                cfg.unit = L"Mbps";
-                cfg.lineColor = RGB(225, 76, 88);
-                cfg.latest = ethernetDownloadMbps_;
-                cfg.maxValue = (std::max)(0.5, ethernetDownloadScaleMbps_);
+                const auto *iface = GetActiveNetworkInterface();
+                if (iface)
+                {
+                    const size_t selectedIndex = static_cast<size_t>(iface - networkInterfaces_.data());
+                    size_t ordinal = 0;
+                    for (size_t i = 0; i <= selectedIndex && i < networkInterfaces_.size(); ++i)
+                    {
+                        if (networkInterfaces_[i].ifType != IF_TYPE_IEEE80211)
+                        {
+                            ++ordinal;
+                        }
+                    }
+
+                    cfg.history = &iface->downloadHistory;
+                    std::wstring title = NetworkTypeLabel(iface->ifType);
+                    title += L" ";
+                    title += std::to_wstring(ordinal > 0 ? ordinal - 1 : 0);
+                    title += L" Download";
+                    if (!iface->adapterName.empty())
+                    {
+                        title += L" | ";
+                        title += iface->adapterName;
+                    }
+                    cfg.title = title;
+                    cfg.unit = L"Mbps";
+                    cfg.lineColor = RGB(225, 76, 88);
+                    cfg.latest = iface->downloadMbps;
+                    cfg.maxValue = (std::max)(0.5, iface->downloadScaleMbps);
+                }
+                else
+                {
+                    cfg.history = &ethernetDownloadHistory_;
+                    cfg.title = L"Ethernet Download";
+                    cfg.unit = L"Mbps";
+                    cfg.lineColor = RGB(225, 76, 88);
+                    cfg.latest = ethernetDownloadMbps_;
+                    cfg.maxValue = (std::max)(0.5, ethernetDownloadScaleMbps_);
+                }
             }
             else
             {
@@ -3641,7 +4150,7 @@ namespace utm::ui
         RECT titleRect = local;
         titleRect.left += 10;
         titleRect.top += 5;
-        DrawTextW(dc, cfg.title, -1, &titleRect, DT_LEFT | DT_TOP | DT_SINGLELINE);
+        DrawTextW(dc, cfg.title.c_str(), -1, &titleRect, DT_LEFT | DT_TOP | DT_SINGLELINE);
 
         std::wstring latestLabel;
         if (draw->CtlID == kIdPerfGraphMemory && activePerformanceView_ == PerformanceView::Memory)
@@ -4045,8 +4554,6 @@ namespace utm::ui
         };
 
         if (activePerformanceView_ == PerformanceView::All ||
-            activePerformanceView_ == PerformanceView::Wifi ||
-            activePerformanceView_ == PerformanceView::Ethernet ||
             activePerformanceView_ == PerformanceView::Gpu)
         {
             constexpr COLORREF kNetworkUpColor = RGB(236, 150, 14);
@@ -4087,39 +4594,29 @@ namespace utm::ui
                     cards.push_back({L"GPU " + std::to_wstring(i) + L" Util", &gpu.utilizationHistory, gpu.utilizationPercent, 100.0, color, L"%", true});
                 }
             }
-            else if (activePerformanceView_ == PerformanceView::Wifi || activePerformanceView_ == PerformanceView::Ethernet)
-            {
-                const ULONG targetType = activePerformanceView_ == PerformanceView::Wifi ? IF_TYPE_IEEE80211 : IF_TYPE_ETHERNET_CSMACD;
-                heading = activePerformanceView_ == PerformanceView::Wifi
-                              ? L"Wi-Fi Interfaces (scroll for all adapters)"
-                              : L"Ethernet Interfaces (scroll for all adapters)";
-
-                size_t displayIndex = 0;
-                for (const auto &iface : networkInterfaces_)
-                {
-                    if (iface.ifType != targetType)
-                    {
-                        continue;
-                    }
-
-                    const std::wstring prefix = (activePerformanceView_ == PerformanceView::Wifi ? L"Wi-Fi " : L"Ethernet ") + std::to_wstring(displayIndex);
-                    cards.push_back({prefix + L" Upload", &iface.uploadHistory, iface.uploadMbps, (std::max)(0.5, iface.uploadScaleMbps), kNetworkUpColor, L"Mbps", false});
-                    cards.push_back({prefix + L" Download", &iface.downloadHistory, iface.downloadMbps, (std::max)(0.5, iface.downloadScaleMbps), kNetworkDownColor, L"Mbps", false});
-                    ++displayIndex;
-                }
-            }
             else
             {
-                heading = L"GPU Adapters (scroll for all GPUs)";
-                for (size_t i = 0; i < gpuDevices_.size(); ++i)
+                const auto *gpu = GetActiveGpu();
+                if (!gpu)
                 {
-                    const auto &gpu = gpuDevices_[i];
-                    const COLORREF utilColor = kGpuPalette[i % (sizeof(kGpuPalette) / sizeof(kGpuPalette[0]))];
-                    const COLORREF memoryColor = kGpuPalette[(i + 1) % (sizeof(kGpuPalette) / sizeof(kGpuPalette[0]))];
+                    heading = L"GPU | No adapter detected";
+                }
+                else
+                {
+                    const size_t gpuIndex = static_cast<size_t>(gpu - gpuDevices_.data());
+                    heading = L"GPU ";
+                    heading += std::to_wstring(gpuIndex);
+                    if (!gpu->name.empty())
+                    {
+                        heading += L" | ";
+                        heading += gpu->name;
+                    }
 
-                    cards.push_back({L"GPU " + std::to_wstring(i) + L" Util", &gpu.utilizationHistory, gpu.utilizationPercent, 100.0, utilColor, L"%", true});
-                    cards.push_back({L"GPU " + std::to_wstring(i) + L" Dedicated", &gpu.dedicatedHistory, gpu.dedicatedUsedGb, (std::max)(0.5, gpu.dedicatedGb), memoryColor, L"GB", false});
-                    cards.push_back({L"GPU " + std::to_wstring(i) + L" Shared", &gpu.sharedHistory, gpu.sharedUsedGb, (std::max)(0.5, gpu.sharedGb), RGB(52, 144, 236), L"GB", false});
+                    const COLORREF utilColor = kGpuPalette[gpuIndex % (sizeof(kGpuPalette) / sizeof(kGpuPalette[0]))];
+                    const COLORREF memoryColor = kGpuPalette[(gpuIndex + 1) % (sizeof(kGpuPalette) / sizeof(kGpuPalette[0]))];
+                    cards.push_back({L"Utilization", &gpu->utilizationHistory, gpu->utilizationPercent, 100.0, utilColor, L"%", true});
+                    cards.push_back({L"Dedicated Memory", &gpu->dedicatedHistory, gpu->dedicatedUsedGb, (std::max)(0.5, gpu->dedicatedGb), memoryColor, L"GB", false});
+                    cards.push_back({L"Shared Memory", &gpu->sharedHistory, gpu->sharedUsedGb, (std::max)(0.5, gpu->sharedGb), RGB(52, 144, 236), L"GB", false});
                 }
             }
 
