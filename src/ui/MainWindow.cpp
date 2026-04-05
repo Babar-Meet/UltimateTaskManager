@@ -8,11 +8,14 @@
 
 #include <commctrl.h>
 #include <commdlg.h>
+#include <dxgi1_6.h>
 #include <iphlpapi.h>
+#include <psapi.h>
 #include <shlobj.h>
 #include <strsafe.h>
 #include <uxtheme.h>
 #include <windowsx.h>
+#include <ws2tcpip.h>
 
 #include <algorithm>
 #include <cstdlib>
@@ -70,6 +73,14 @@ namespace
     constexpr int kIdQuickProcessEdit = 1036;
     constexpr int kIdQuickDeleteLabel = 1037;
     constexpr int kIdQuickDeletePathEdit = 1038;
+    constexpr int kIdPerfNavPanel = 1039;
+    constexpr int kIdPerfNavCpu = 1040;
+    constexpr int kIdPerfNavMemory = 1041;
+    constexpr int kIdPerfNavDisk = 1042;
+    constexpr int kIdPerfNavWifi = 1043;
+    constexpr int kIdPerfNavEthernet = 1044;
+    constexpr int kIdPerfNavGpu = 1045;
+    constexpr int kIdPerfDetails = 1046;
 
     constexpr int kIdQuickToolPortKillAll = 41000;
     constexpr int kIdQuickToolProcessKillAll = 41001;
@@ -146,6 +157,60 @@ namespace
         }
 
         return text;
+    }
+
+    std::wstring SockaddrToIpString(const SOCKADDR *sockaddr)
+    {
+        if (!sockaddr)
+        {
+            return L"N/A";
+        }
+
+        wchar_t buffer[64]{};
+        DWORD length = static_cast<DWORD>(std::size(buffer));
+        if (WSAAddressToStringW(
+                const_cast<LPSOCKADDR>(sockaddr),
+                sockaddr->sa_family == AF_INET ? sizeof(SOCKADDR_IN) : sizeof(SOCKADDR_IN6),
+                nullptr,
+                buffer,
+                &length) == 0)
+        {
+            return buffer;
+        }
+
+        return L"N/A";
+    }
+
+    void UpdateDynamicScale(double &scale, const std::deque<double> &history, double floor, double growPadding)
+    {
+        double peak = 0.0;
+        for (double value : history)
+        {
+            if (value > peak)
+            {
+                peak = value;
+            }
+        }
+
+        double target = peak > 0.0 ? peak * growPadding : floor;
+        target = (std::max)(floor, target);
+
+        if (scale <= 0.0)
+        {
+            scale = target;
+            return;
+        }
+
+        if (target > scale)
+        {
+            scale = target;
+        }
+        else
+        {
+            scale = scale * 0.88 + target * 0.12;
+        }
+
+        scale = (std::max)(floor, scale);
     }
 
     HMENU MenuId(int id)
@@ -491,6 +556,56 @@ namespace utm::ui
                 gpuCounter_ = nullptr;
             }
         }
+
+        if (PdhOpenQueryW(nullptr, 0, &diskQuery_) == ERROR_SUCCESS)
+        {
+            const bool readOk = PdhAddEnglishCounterW(diskQuery_, L"\\PhysicalDisk(_Total)\\Disk Read Bytes/sec", 0, &diskReadCounter_) == ERROR_SUCCESS;
+            const bool writeOk = PdhAddEnglishCounterW(diskQuery_, L"\\PhysicalDisk(_Total)\\Disk Write Bytes/sec", 0, &diskWriteCounter_) == ERROR_SUCCESS;
+            const bool activeOk = PdhAddEnglishCounterW(diskQuery_, L"\\PhysicalDisk(_Total)\\% Disk Time", 0, &diskActiveCounter_) == ERROR_SUCCESS;
+            const bool latencyOk = PdhAddEnglishCounterW(diskQuery_, L"\\PhysicalDisk(_Total)\\Avg. Disk sec/Transfer", 0, &diskLatencyCounter_) == ERROR_SUCCESS;
+
+            diskCounterReady_ = readOk && writeOk && activeOk && latencyOk && PdhCollectQueryData(diskQuery_) == ERROR_SUCCESS;
+            if (!diskCounterReady_)
+            {
+                PdhCloseQuery(diskQuery_);
+                diskQuery_ = nullptr;
+                diskReadCounter_ = nullptr;
+                diskWriteCounter_ = nullptr;
+                diskActiveCounter_ = nullptr;
+                diskLatencyCounter_ = nullptr;
+            }
+        }
+
+        wchar_t sysDir[MAX_PATH]{};
+        if (GetSystemDirectoryW(sysDir, static_cast<UINT>(std::size(sysDir))) > 2)
+        {
+            systemDrive_ = std::wstring(sysDir, sysDir + 2) + L"\\";
+        }
+        if (systemDrive_.empty())
+        {
+            systemDrive_ = L"C:\\";
+        }
+
+        switch (GetDriveTypeW(systemDrive_.c_str()))
+        {
+        case DRIVE_FIXED:
+            diskType_ = L"Fixed";
+            break;
+        case DRIVE_REMOVABLE:
+            diskType_ = L"Removable";
+            break;
+        case DRIVE_REMOTE:
+            diskType_ = L"Network";
+            break;
+        case DRIVE_CDROM:
+            diskType_ = L"Optical";
+            break;
+        default:
+            diskType_ = L"Unknown";
+            break;
+        }
+
+        UpdateNetworkAdapterInfo();
     }
 
     MainWindow::~MainWindow()
@@ -532,6 +647,16 @@ namespace utm::ui
             PdhCloseQuery(gpuQuery_);
             gpuQuery_ = nullptr;
             gpuCounter_ = nullptr;
+        }
+
+        if (diskQuery_)
+        {
+            PdhCloseQuery(diskQuery_);
+            diskQuery_ = nullptr;
+            diskReadCounter_ = nullptr;
+            diskWriteCounter_ = nullptr;
+            diskActiveCounter_ = nullptr;
+            diskLatencyCounter_ = nullptr;
         }
     }
 
@@ -768,6 +893,42 @@ namespace utm::ui
             if (id == kIdNavQuickTools)
             {
                 SetActiveSection(Section::QuickKillTools);
+                return 0;
+            }
+
+            if (id == kIdPerfNavCpu)
+            {
+                SetActivePerformanceView(PerformanceView::Cpu);
+                return 0;
+            }
+
+            if (id == kIdPerfNavMemory)
+            {
+                SetActivePerformanceView(PerformanceView::Memory);
+                return 0;
+            }
+
+            if (id == kIdPerfNavDisk)
+            {
+                SetActivePerformanceView(PerformanceView::Disk);
+                return 0;
+            }
+
+            if (id == kIdPerfNavWifi)
+            {
+                SetActivePerformanceView(PerformanceView::Wifi);
+                return 0;
+            }
+
+            if (id == kIdPerfNavEthernet)
+            {
+                SetActivePerformanceView(PerformanceView::Ethernet);
+                return 0;
+            }
+
+            if (id == kIdPerfNavGpu)
+            {
+                SetActivePerformanceView(PerformanceView::Gpu);
                 return 0;
             }
 
@@ -1073,6 +1234,13 @@ namespace utm::ui
                 return reinterpret_cast<LRESULT>(backgroundBrush_);
             }
 
+            if (control == perfNavPanel_ || control == perfDetails_)
+            {
+                SetBkColor(dc, kCardColor);
+                SetTextColor(dc, RGB(35, 49, 72));
+                return reinterpret_cast<LRESULT>(cardBrush_);
+            }
+
             if (control == performancePlaceholder_)
             {
                 SetBkColor(dc, kMainBackgroundColor);
@@ -1137,6 +1305,18 @@ namespace utm::ui
                 SetBkColor(dc, kSidebarBackgroundColor);
                 SetTextColor(dc, RGB(32, 48, 76));
                 return reinterpret_cast<LRESULT>(sidebarBrush_);
+            }
+
+            if (control == perfNavCpu_ ||
+                control == perfNavMemory_ ||
+                control == perfNavDisk_ ||
+                control == perfNavWifi_ ||
+                control == perfNavEthernet_ ||
+                control == perfNavGpu_)
+            {
+                SetBkColor(dc, kCardColor);
+                SetTextColor(dc, RGB(32, 48, 76));
+                return reinterpret_cast<LRESULT>(cardBrush_);
             }
 
             SetBkColor(dc, kMainBackgroundColor);
@@ -1368,6 +1548,58 @@ namespace utm::ui
             0,
             hwnd_,
             MenuId(kIdPerfPlaceholder),
+            instance_,
+            nullptr);
+
+        perfNavPanel_ = CreateWindowExW(
+            0,
+            L"STATIC",
+            nullptr,
+            WS_CHILD,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdPerfNavPanel),
+            instance_,
+            nullptr);
+
+        auto createPerfNavButton = [&](int id, const wchar_t *label, DWORD extraStyle)
+        {
+            return CreateWindowExW(
+                0,
+                L"BUTTON",
+                label,
+                WS_CHILD | WS_TABSTOP | BS_AUTORADIOBUTTON | BS_PUSHLIKE | extraStyle,
+                0,
+                0,
+                0,
+                0,
+                hwnd_,
+                MenuId(id),
+                instance_,
+                nullptr);
+        };
+
+        perfNavCpu_ = createPerfNavButton(kIdPerfNavCpu, L"CPU", WS_GROUP);
+        perfNavMemory_ = createPerfNavButton(kIdPerfNavMemory, L"Memory", 0);
+        perfNavDisk_ = createPerfNavButton(kIdPerfNavDisk, L"Disk", 0);
+        perfNavWifi_ = createPerfNavButton(kIdPerfNavWifi, L"Wi-Fi", 0);
+        perfNavEthernet_ = createPerfNavButton(kIdPerfNavEthernet, L"Ethernet", 0);
+        perfNavGpu_ = createPerfNavButton(kIdPerfNavGpu, L"GPU", 0);
+
+        perfDetails_ = CreateWindowExW(
+            WS_EX_CLIENTEDGE,
+            L"STATIC",
+            L"Performance details",
+            WS_CHILD | SS_LEFT,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdPerfDetails),
             instance_,
             nullptr);
 
@@ -1704,7 +1936,8 @@ namespace utm::ui
 
         if (!sidebarTitle_ || !navProcesses_ || !navPerformance_ || !navNetwork_ || !navHardware_ || !navServices_ || !navStartupApps_ || !navUsers_ || !navQuickTools_ ||
             !sectionTitle_ || !filterLabel_ || !filterEdit_ || !processList_ ||
-            !performancePlaceholder_ || !perfGraphCpu_ || !perfGraphMemory_ || !perfGraphGpu_ || !perfGraphUpload_ || !perfGraphDownload_ || !perfCoreGrid_ ||
+            !performancePlaceholder_ || !perfNavPanel_ || !perfNavCpu_ || !perfNavMemory_ || !perfNavDisk_ || !perfNavWifi_ || !perfNavEthernet_ || !perfNavGpu_ ||
+            !perfGraphCpu_ || !perfGraphMemory_ || !perfGraphGpu_ || !perfGraphUpload_ || !perfGraphDownload_ || !perfCoreGrid_ || !perfDetails_ ||
             !networkPlaceholder_ || !hardwarePlaceholder_ || !servicesPlaceholder_ || !startupAppsPlaceholder_ || !usersPlaceholder_ ||
             !quickToolsTitle_ || !quickToolsHint_ ||
             !quickPortLabel_ || !quickPortEdit_ || !quickKillPortButton_ || !quickPortKillOneButton_ ||
@@ -1732,7 +1965,15 @@ namespace utm::ui
         applyFont(filterEdit_, uiFont_);
         applyFont(processList_, uiFont_);
         applyFont(performancePlaceholder_, uiFont_);
+        applyFont(perfNavPanel_, uiFont_);
+        applyFont(perfNavCpu_, uiBoldFont_);
+        applyFont(perfNavMemory_, uiBoldFont_);
+        applyFont(perfNavDisk_, uiBoldFont_);
+        applyFont(perfNavWifi_, uiBoldFont_);
+        applyFont(perfNavEthernet_, uiBoldFont_);
+        applyFont(perfNavGpu_, uiBoldFont_);
         applyFont(perfCoreGrid_, uiFont_);
+        applyFont(perfDetails_, uiFont_);
         applyFont(networkPlaceholder_, uiFont_);
         applyFont(hardwarePlaceholder_, uiFont_);
         applyFont(servicesPlaceholder_, uiFont_);
@@ -1756,6 +1997,7 @@ namespace utm::ui
         applyFont(statusText_, uiFont_);
 
         UpdateSidebarSelection();
+        UpdatePerformanceSubviewSelection();
         ApplySectionVisibility();
         return true;
     }
@@ -1816,26 +2058,51 @@ namespace utm::ui
         MoveWindow(usersPlaceholder_, contentX, bodyTop, contentWidth, bodyHeight, TRUE);
 
         const int perfGap = 8;
-        const int perfGraphHeight = 102;
-        const int perfHalfWidth = (contentWidth - perfGap) / 2;
-        int perfY = bodyTop;
+        const int perfSidebarWidth = (std::min)(210, (std::max)(150, contentWidth / 4));
+        const int perfMainX = contentX + perfSidebarWidth + 10;
+        const int perfMainWidth = (std::max)(140, contentWidth - perfSidebarWidth - 10);
+        const int perfHeaderHeight = 22;
+        const int perfDetailsHeight = (std::max)(120, (std::min)(190, bodyHeight / 3));
+        const int perfGraphTop = bodyTop + perfHeaderHeight + 6;
+        const int perfGraphHeight = (std::max)(120, statusY - perfGraphTop - perfDetailsHeight - kPadding);
+        const int perfDetailsTop = perfGraphTop + perfGraphHeight + kPadding;
 
-        MoveWindow(performancePlaceholder_, contentX, perfY, contentWidth, 22, TRUE);
-        perfY += 26;
+        MoveWindow(perfNavPanel_, contentX, bodyTop, perfSidebarWidth, bodyHeight, TRUE);
 
-        MoveWindow(perfGraphCpu_, contentX, perfY, perfHalfWidth, perfGraphHeight, TRUE);
-        MoveWindow(perfGraphMemory_, contentX + perfHalfWidth + perfGap, perfY, contentWidth - perfHalfWidth - perfGap, perfGraphHeight, TRUE);
-        perfY += perfGraphHeight + perfGap;
+        const int perfNavX = contentX + 8;
+        const int perfNavW = perfSidebarWidth - 16;
+        int perfNavY = bodyTop + 8;
+        MoveWindow(perfNavCpu_, perfNavX, perfNavY, perfNavW, 30, TRUE);
+        perfNavY += 36;
+        MoveWindow(perfNavMemory_, perfNavX, perfNavY, perfNavW, 30, TRUE);
+        perfNavY += 36;
+        MoveWindow(perfNavDisk_, perfNavX, perfNavY, perfNavW, 30, TRUE);
+        perfNavY += 36;
+        MoveWindow(perfNavWifi_, perfNavX, perfNavY, perfNavW, 30, TRUE);
+        perfNavY += 36;
+        MoveWindow(perfNavEthernet_, perfNavX, perfNavY, perfNavW, 30, TRUE);
+        perfNavY += 36;
+        MoveWindow(perfNavGpu_, perfNavX, perfNavY, perfNavW, 30, TRUE);
 
-        MoveWindow(perfGraphUpload_, contentX, perfY, perfHalfWidth, perfGraphHeight, TRUE);
-        MoveWindow(perfGraphDownload_, contentX + perfHalfWidth + perfGap, perfY, contentWidth - perfHalfWidth - perfGap, perfGraphHeight, TRUE);
-        perfY += perfGraphHeight + perfGap;
+        MoveWindow(performancePlaceholder_, perfMainX, bodyTop, perfMainWidth, perfHeaderHeight, TRUE);
+        MoveWindow(perfDetails_, perfMainX, perfDetailsTop, perfMainWidth, perfDetailsHeight, TRUE);
 
-        MoveWindow(perfGraphGpu_, contentX, perfY, contentWidth, perfGraphHeight, TRUE);
-        perfY += perfGraphHeight + perfGap;
+        const int perfHalfWidth = (perfMainWidth - perfGap) / 2;
 
-        const int coreGridHeight = (std::max)(80, statusY - perfY - kPadding);
-        MoveWindow(perfCoreGrid_, contentX, perfY, contentWidth, coreGridHeight, TRUE);
+        MoveWindow(perfGraphCpu_, perfMainX, perfGraphTop, perfMainWidth, perfGraphHeight, TRUE);
+        MoveWindow(perfGraphMemory_, perfMainX, perfGraphTop, perfMainWidth, perfGraphHeight, TRUE);
+        MoveWindow(perfGraphGpu_, perfMainX, perfGraphTop, perfMainWidth, perfGraphHeight, TRUE);
+        MoveWindow(perfGraphUpload_, perfMainX, perfGraphTop, perfHalfWidth, perfGraphHeight, TRUE);
+        MoveWindow(perfGraphDownload_, perfMainX + perfHalfWidth + perfGap, perfGraphTop, perfMainWidth - perfHalfWidth - perfGap, perfGraphHeight, TRUE);
+        MoveWindow(perfCoreGrid_, perfMainX, perfGraphTop, perfMainWidth, perfGraphHeight, TRUE);
+
+        if (activePerformanceView_ == PerformanceView::Cpu)
+        {
+            const int cpuTopHeight = (std::max)(100, perfGraphHeight / 3);
+            const int cpuCoreHeight = (std::max)(80, perfGraphHeight - cpuTopHeight - perfGap);
+            MoveWindow(perfGraphCpu_, perfMainX, perfGraphTop, perfMainWidth, cpuTopHeight, TRUE);
+            MoveWindow(perfCoreGrid_, perfMainX, perfGraphTop + cpuTopHeight + perfGap, perfMainWidth, cpuCoreHeight, TRUE);
+        }
 
         int quickY = bodyTop + 4;
         MoveWindow(quickToolsTitle_, contentX, quickY, contentWidth, 32, TRUE);
@@ -1891,12 +2158,30 @@ namespace utm::ui
         ShowWindow(processList_, processTab ? SW_SHOW : SW_HIDE);
 
         ShowWindow(performancePlaceholder_, perfTab ? SW_SHOW : SW_HIDE);
-        ShowWindow(perfGraphCpu_, perfTab ? SW_SHOW : SW_HIDE);
-        ShowWindow(perfGraphMemory_, perfTab ? SW_SHOW : SW_HIDE);
-        ShowWindow(perfGraphGpu_, perfTab ? SW_SHOW : SW_HIDE);
-        ShowWindow(perfGraphUpload_, perfTab ? SW_SHOW : SW_HIDE);
-        ShowWindow(perfGraphDownload_, perfTab ? SW_SHOW : SW_HIDE);
-        ShowWindow(perfCoreGrid_, perfTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(perfNavPanel_, perfTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(perfNavCpu_, perfTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(perfNavMemory_, perfTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(perfNavDisk_, perfTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(perfNavWifi_, perfTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(perfNavEthernet_, perfTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(perfNavGpu_, perfTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(perfDetails_, perfTab ? SW_SHOW : SW_HIDE);
+
+        const bool showCpu = perfTab && activePerformanceView_ == PerformanceView::Cpu;
+        const bool showMemory = perfTab && activePerformanceView_ == PerformanceView::Memory;
+        const bool showDisk = perfTab && activePerformanceView_ == PerformanceView::Disk;
+        const bool showWifi = perfTab && activePerformanceView_ == PerformanceView::Wifi;
+        const bool showEthernet = perfTab && activePerformanceView_ == PerformanceView::Ethernet;
+        const bool showGpu = perfTab && activePerformanceView_ == PerformanceView::Gpu;
+
+        ShowWindow(perfGraphCpu_, showCpu ? SW_SHOW : SW_HIDE);
+        ShowWindow(perfCoreGrid_, showCpu ? SW_SHOW : SW_HIDE);
+        ShowWindow(perfGraphMemory_, showMemory ? SW_SHOW : SW_HIDE);
+        ShowWindow(perfGraphGpu_, showGpu ? SW_SHOW : SW_HIDE);
+
+        const bool showDualThroughput = showDisk || showWifi || showEthernet;
+        ShowWindow(perfGraphUpload_, showDualThroughput ? SW_SHOW : SW_HIDE);
+        ShowWindow(perfGraphDownload_, showDualThroughput ? SW_SHOW : SW_HIDE);
 
         ShowWindow(networkPlaceholder_, networkTab ? SW_SHOW : SW_HIDE);
         ShowWindow(hardwarePlaceholder_, hardwareTab ? SW_SHOW : SW_HIDE);
@@ -1921,6 +2206,51 @@ namespace utm::ui
         ShowWindow(quickKillSmartDeleteButton_, quickToolsTab ? SW_SHOW : SW_HIDE);
     }
 
+    void MainWindow::SetActivePerformanceView(PerformanceView view)
+    {
+        if (activePerformanceView_ == view)
+        {
+            return;
+        }
+
+        activePerformanceView_ = view;
+        UpdatePerformanceSubviewSelection();
+
+        if (activeSection_ == Section::Performance)
+        {
+            LayoutControls();
+            RefreshPerformancePanel();
+        }
+    }
+
+    void MainWindow::UpdatePerformanceSubviewSelection()
+    {
+        int checked = kIdPerfNavCpu;
+        switch (activePerformanceView_)
+        {
+        case PerformanceView::Cpu:
+            checked = kIdPerfNavCpu;
+            break;
+        case PerformanceView::Memory:
+            checked = kIdPerfNavMemory;
+            break;
+        case PerformanceView::Disk:
+            checked = kIdPerfNavDisk;
+            break;
+        case PerformanceView::Wifi:
+            checked = kIdPerfNavWifi;
+            break;
+        case PerformanceView::Ethernet:
+            checked = kIdPerfNavEthernet;
+            break;
+        case PerformanceView::Gpu:
+            checked = kIdPerfNavGpu;
+            break;
+        }
+
+        CheckRadioButton(hwnd_, kIdPerfNavCpu, kIdPerfNavGpu, checked);
+    }
+
     void MainWindow::SetActiveSection(Section section)
     {
         if (activeSection_ == section)
@@ -1930,11 +2260,16 @@ namespace utm::ui
 
         activeSection_ = section;
         UpdateSidebarSelection();
+        UpdatePerformanceSubviewSelection();
         LayoutControls();
 
         if (activeSection_ == Section::Processes)
         {
             RefreshProcessView();
+        }
+        else if (activeSection_ == Section::Performance)
+        {
+            RefreshPerformancePanel();
         }
     }
 
@@ -2051,6 +2386,281 @@ namespace utm::ui
         return (std::clamp)(total, 0.0, 100.0);
     }
 
+    void MainWindow::UpdateNetworkAdapterInfo()
+    {
+        wifiAdapterName_ = L"N/A";
+        wifiIpv4_ = L"N/A";
+        wifiIpv6_ = L"N/A";
+        ethernetAdapterName_ = L"N/A";
+        ethernetIpv4_ = L"N/A";
+        ethernetIpv6_ = L"N/A";
+
+        ULONG flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER;
+        ULONG size = 16 * 1024;
+        std::vector<std::uint8_t> buffer(size);
+        auto *adapters = reinterpret_cast<IP_ADAPTER_ADDRESSES *>(buffer.data());
+
+        ULONG result = GetAdaptersAddresses(AF_UNSPEC, flags, nullptr, adapters, &size);
+        if (result == ERROR_BUFFER_OVERFLOW)
+        {
+            buffer.resize(size);
+            adapters = reinterpret_cast<IP_ADAPTER_ADDRESSES *>(buffer.data());
+            result = GetAdaptersAddresses(AF_UNSPEC, flags, nullptr, adapters, &size);
+        }
+
+        if (result != NO_ERROR)
+        {
+            return;
+        }
+
+        for (const auto *adapter = adapters; adapter; adapter = adapter->Next)
+        {
+            if (adapter->OperStatus != IfOperStatusUp)
+            {
+                continue;
+            }
+
+            const bool isWifi = adapter->IfType == IF_TYPE_IEEE80211;
+            const bool isEthernet = adapter->IfType == IF_TYPE_ETHERNET_CSMACD;
+            if (!isWifi && !isEthernet)
+            {
+                continue;
+            }
+
+            std::wstring *name = isWifi ? &wifiAdapterName_ : &ethernetAdapterName_;
+            std::wstring *ipv4 = isWifi ? &wifiIpv4_ : &ethernetIpv4_;
+            std::wstring *ipv6 = isWifi ? &wifiIpv6_ : &ethernetIpv6_;
+
+            if (name->empty() || *name == L"N/A")
+            {
+                if (adapter->FriendlyName && adapter->FriendlyName[0] != L'\0')
+                {
+                    *name = adapter->FriendlyName;
+                }
+            }
+
+            for (const auto *unicast = adapter->FirstUnicastAddress; unicast; unicast = unicast->Next)
+            {
+                if (!unicast->Address.lpSockaddr)
+                {
+                    continue;
+                }
+
+                if (unicast->Address.lpSockaddr->sa_family == AF_INET && *ipv4 == L"N/A")
+                {
+                    *ipv4 = SockaddrToIpString(unicast->Address.lpSockaddr);
+                }
+
+                if (unicast->Address.lpSockaddr->sa_family == AF_INET6 && *ipv6 == L"N/A")
+                {
+                    *ipv6 = SockaddrToIpString(unicast->Address.lpSockaddr);
+                }
+            }
+        }
+    }
+
+    std::wstring MainWindow::BuildPerformanceDetailsText() const
+    {
+        std::wstringstream text;
+
+        switch (activePerformanceView_)
+        {
+        case PerformanceView::Cpu:
+        {
+            std::uint64_t totalThreads = 0;
+            for (const auto &p : snapshot_.processes)
+            {
+                totalThreads += p.threadCount;
+            }
+
+            DWORD sockets = 0;
+            DWORD cores = 0;
+            DWORD logical = 0;
+            std::uint64_t l1Kb = 0;
+            std::uint64_t l2Kb = 0;
+            std::uint64_t l3Kb = 0;
+
+            DWORD infoSize = 0;
+            GetLogicalProcessorInformationEx(RelationAll, nullptr, &infoSize);
+            if (GetLastError() == ERROR_INSUFFICIENT_BUFFER && infoSize > 0)
+            {
+                std::vector<std::uint8_t> infoBuffer(infoSize);
+                auto *info = reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(infoBuffer.data());
+                if (GetLogicalProcessorInformationEx(RelationAll, info, &infoSize))
+                {
+                    auto countBits = [](KAFFINITY mask)
+                    {
+                        DWORD count = 0;
+                        while (mask)
+                        {
+                            mask &= (mask - 1);
+                            ++count;
+                        }
+                        return count;
+                    };
+
+                    BYTE *ptr = infoBuffer.data();
+                    BYTE *end = infoBuffer.data() + infoSize;
+                    while (ptr < end)
+                    {
+                        auto *entry = reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(ptr);
+                        if (entry->Relationship == RelationProcessorPackage)
+                        {
+                            ++sockets;
+                        }
+                        else if (entry->Relationship == RelationProcessorCore)
+                        {
+                            ++cores;
+                            for (WORD g = 0; g < entry->Processor.GroupCount; ++g)
+                            {
+                                logical += countBits(entry->Processor.GroupMask[g].Mask);
+                            }
+                        }
+                        else if (entry->Relationship == RelationCache)
+                        {
+                            const std::uint64_t sizeKb = entry->Cache.CacheSize / 1024;
+                            if (entry->Cache.Level == 1)
+                            {
+                                l1Kb = (std::max)(l1Kb, sizeKb);
+                            }
+                            else if (entry->Cache.Level == 2)
+                            {
+                                l2Kb = (std::max)(l2Kb, sizeKb);
+                            }
+                            else if (entry->Cache.Level == 3)
+                            {
+                                l3Kb = (std::max)(l3Kb, sizeKb);
+                            }
+                        }
+
+                        ptr += entry->Size;
+                    }
+                }
+            }
+
+            if (logical == 0)
+            {
+                logical = GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
+            }
+            if (cores == 0)
+            {
+                cores = logical;
+            }
+            if (sockets == 0)
+            {
+                sockets = 1;
+            }
+
+            DWORD baseMhz = 0;
+            HKEY cpuKey = nullptr;
+            if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0", 0, KEY_READ, &cpuKey) == ERROR_SUCCESS)
+            {
+                DWORD type = 0;
+                DWORD size = sizeof(baseMhz);
+                if (RegQueryValueExW(cpuKey, L"~MHz", nullptr, &type, reinterpret_cast<LPBYTE>(&baseMhz), &size) != ERROR_SUCCESS)
+                {
+                    baseMhz = 0;
+                }
+                RegCloseKey(cpuKey);
+            }
+
+            const bool virtualization = IsProcessorFeaturePresent(PF_VIRT_FIRMWARE_ENABLED) != FALSE;
+
+            const std::uint64_t uptimeSeconds = GetTickCount64() / 1000;
+            const std::uint64_t upDays = uptimeSeconds / 86400;
+            const std::uint64_t upHours = (uptimeSeconds % 86400) / 3600;
+            const std::uint64_t upMinutes = (uptimeSeconds % 3600) / 60;
+
+            text << L"Utilization: " << static_cast<int>(totalCpuPercent_ + 0.5) << L"%\r\n"
+                 << L"Processes: " << snapshot_.processes.size() << L" | Threads: " << totalThreads << L"\r\n"
+                 << L"Uptime: " << upDays << L"d " << upHours << L"h " << upMinutes << L"m\r\n"
+                 << L"Base speed: " << (baseMhz > 0 ? std::to_wstring(baseMhz) + L" MHz" : L"N/A") << L"\r\n"
+                 << L"Sockets: " << sockets << L" | Cores: " << cores << L" | Logical processors: " << logical << L"\r\n"
+                 << L"Virtualization: " << (virtualization ? L"Enabled" : L"Disabled/Unknown") << L"\r\n"
+                 << L"L1 cache: " << (l1Kb > 0 ? std::to_wstring(l1Kb) + L" KB" : L"N/A")
+                 << L" | L2 cache: " << (l2Kb > 0 ? std::to_wstring(l2Kb) + L" KB" : L"N/A")
+                 << L" | L3 cache: " << (l3Kb > 0 ? std::to_wstring(l3Kb) + L" KB" : L"N/A");
+            break;
+        }
+
+        case PerformanceView::Memory:
+        {
+            PERFORMANCE_INFORMATION perf{};
+            perf.cb = sizeof(perf);
+            GetPerformanceInfo(&perf, sizeof(perf));
+
+            const double pageSize = static_cast<double>(perf.PageSize);
+            const double commitUsedGb = (perf.CommitTotal * pageSize) / kBytesPerGiB;
+            const double commitLimitGb = (perf.CommitLimit * pageSize) / kBytesPerGiB;
+            const double cachedGb = (perf.SystemCache * pageSize) / kBytesPerGiB;
+            const double pagedPoolGb = (perf.KernelPaged * pageSize) / kBytesPerGiB;
+            const double nonPagedPoolGb = (perf.KernelNonpaged * pageSize) / kBytesPerGiB;
+            const double availableGb = (std::max)(0.0, memoryTotalGb_ - memoryUsedGb_);
+
+            text << L"In use: " << FormatNumber(memoryUsedGb_, 1) << L" GB\r\n"
+                 << L"Available: " << FormatNumber(availableGb, 1) << L" GB\r\n"
+                 << L"Committed: " << FormatNumber(commitUsedGb, 1) << L" / " << FormatNumber(commitLimitGb, 1) << L" GB\r\n"
+                 << L"Cached: " << FormatNumber(cachedGb, 1) << L" GB\r\n"
+                 << L"Paged pool: " << FormatNumber(pagedPoolGb, 2) << L" GB | Non-paged pool: " << FormatNumber(nonPagedPoolGb, 2) << L" GB\r\n"
+                 << L"Speed: N/A | Slots used: N/A | Form factor: N/A | Hardware reserved: N/A";
+            break;
+        }
+
+        case PerformanceView::Disk:
+        {
+            ULARGE_INTEGER freeBytesAvailable{};
+            ULARGE_INTEGER totalBytes{};
+            ULARGE_INTEGER totalFree{};
+            GetDiskFreeSpaceExW(systemDrive_.c_str(), &freeBytesAvailable, &totalBytes, &totalFree);
+
+            PERFORMANCE_INFORMATION perf{};
+            perf.cb = sizeof(perf);
+            GetPerformanceInfo(&perf, sizeof(perf));
+            const bool pageFileEnabled = perf.CommitLimit > perf.PhysicalTotal;
+
+            text << L"Active time: " << static_cast<int>(diskActivePercent_ + 0.5) << L"%\r\n"
+                 << L"Avg response time: " << FormatNumber(diskAvgResponseMs_, 2) << L" ms\r\n"
+                 << L"Read speed: " << FormatNumber(diskReadMBps_, diskReadMBps_ < 10.0 ? 2 : 1) << L" MB/s\r\n"
+                 << L"Write speed: " << FormatNumber(diskWriteMBps_, diskWriteMBps_ < 10.0 ? 2 : 1) << L" MB/s\r\n"
+                 << L"Capacity: " << FormatNumber(static_cast<double>(totalBytes.QuadPart) / kBytesPerGiB, 1) << L" GB\r\n"
+                 << L"Formatted size: " << FormatNumber(static_cast<double>(totalFree.QuadPart) / kBytesPerGiB, 1) << L" GB free\r\n"
+                 << L"System disk: " << systemDrive_ << L" | Page file: " << (pageFileEnabled ? L"Yes" : L"No") << L" | Type: " << diskType_;
+            break;
+        }
+
+        case PerformanceView::Wifi:
+            text << L"Adapter: " << wifiAdapterName_ << L"\r\n"
+                 << L"Upload: " << FormatNumber(wifiUploadMbps_, wifiUploadMbps_ < 10.0 ? 2 : 1) << L" Mbps\r\n"
+                 << L"Download: " << FormatNumber(wifiDownloadMbps_, wifiDownloadMbps_ < 10.0 ? 2 : 1) << L" Mbps\r\n"
+                 << L"Connection type: Wi-Fi\r\n"
+                 << L"IPv4: " << wifiIpv4_ << L"\r\n"
+                 << L"IPv6: " << wifiIpv6_ << L"\r\n"
+                 << L"SSID: N/A (WLAN API pending) | Signal strength: N/A";
+            break;
+
+        case PerformanceView::Ethernet:
+            text << L"Adapter: " << ethernetAdapterName_ << L"\r\n"
+                 << L"Upload: " << FormatNumber(ethernetUploadMbps_, ethernetUploadMbps_ < 10.0 ? 2 : 1) << L" Mbps\r\n"
+                 << L"Download: " << FormatNumber(ethernetDownloadMbps_, ethernetDownloadMbps_ < 10.0 ? 2 : 1) << L" Mbps\r\n"
+                 << L"Connection type: Ethernet\r\n"
+                 << L"IPv4: " << ethernetIpv4_ << L"\r\n"
+                 << L"IPv6: " << ethernetIpv6_;
+            break;
+
+        case PerformanceView::Gpu:
+            text << L"Utilization: " << static_cast<int>(gpuPercent_ + 0.5) << L"%\r\n"
+                 << L"Adapter: " << (gpuAdapterName_.empty() ? L"N/A" : gpuAdapterName_) << L"\r\n"
+                 << L"Dedicated GPU memory: " << FormatNumber(gpuDedicatedGb_, 1) << L" GB\r\n"
+                 << L"Shared GPU memory: " << FormatNumber(gpuSharedGb_, 1) << L" GB\r\n"
+                 << L"Driver version/date: N/A | DirectX version: N/A\r\n"
+                 << L"Physical location: " << (gpuLocation_.empty() ? L"N/A" : gpuLocation_) << L"\r\n"
+                 << L"Engines: 3D / Copy / Video Decode / Video Encode (detailed counters pending)";
+            break;
+        }
+
+        return text.str();
+    }
+
     void MainWindow::UpdatePerformanceMetrics()
     {
         const DWORD detectedCoreCount = GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
@@ -2128,6 +2738,43 @@ namespace utm::ui
             memoryPercent_ = (std::clamp)(memoryPercent_, 0.0, 100.0);
         }
 
+        auto readCounterValue = [](PDH_HCOUNTER counter)
+        {
+            if (!counter)
+            {
+                return 0.0;
+            }
+
+            PDH_FMT_COUNTERVALUE value{};
+            if (PdhGetFormattedCounterValue(counter, PDH_FMT_DOUBLE, nullptr, &value) != ERROR_SUCCESS)
+            {
+                return 0.0;
+            }
+
+            if (value.CStatus != ERROR_SUCCESS)
+            {
+                return 0.0;
+            }
+
+            return value.doubleValue;
+        };
+
+        if (diskCounterReady_ && diskQuery_)
+        {
+            if (PdhCollectQueryData(diskQuery_) == ERROR_SUCCESS)
+            {
+                const double readBytesPerSec = readCounterValue(diskReadCounter_);
+                const double writeBytesPerSec = readCounterValue(diskWriteCounter_);
+                const double activePercent = readCounterValue(diskActiveCounter_);
+                const double avgSec = readCounterValue(diskLatencyCounter_);
+
+                diskReadMBps_ = (std::max)(0.0, readBytesPerSec / (1024.0 * 1024.0));
+                diskWriteMBps_ = (std::max)(0.0, writeBytesPerSec / (1024.0 * 1024.0));
+                diskActivePercent_ = (std::clamp)(activePercent, 0.0, 100.0);
+                diskAvgResponseMs_ = (std::max)(0.0, avgSec * 1000.0);
+            }
+        }
+
         ULONG ifTableSize = 0;
         if (GetIfTable(nullptr, &ifTableSize, FALSE) == ERROR_INSUFFICIENT_BUFFER && ifTableSize > 0)
         {
@@ -2137,6 +2784,10 @@ namespace utm::ui
             {
                 std::uint64_t totalIn = 0;
                 std::uint64_t totalOut = 0;
+                std::uint64_t wifiIn = 0;
+                std::uint64_t wifiOut = 0;
+                std::uint64_t ethernetIn = 0;
+                std::uint64_t ethernetOut = 0;
 
                 for (DWORD i = 0; i < ifTable->dwNumEntries; ++i)
                 {
@@ -2148,6 +2799,17 @@ namespace utm::ui
 
                     totalIn += row.dwInOctets;
                     totalOut += row.dwOutOctets;
+
+                    if (row.dwType == IF_TYPE_IEEE80211)
+                    {
+                        wifiIn += row.dwInOctets;
+                        wifiOut += row.dwOutOctets;
+                    }
+                    else if (row.dwType == IF_TYPE_ETHERNET_CSMACD)
+                    {
+                        ethernetIn += row.dwInOctets;
+                        ethernetOut += row.dwOutOctets;
+                    }
                 }
 
                 const std::uint64_t nowMs = GetTickCount64();
@@ -2161,77 +2823,111 @@ namespace utm::ui
 
                         downloadMbps_ = (static_cast<double>(inDelta) * 8.0) / (elapsedSec * 1000.0 * 1000.0);
                         uploadMbps_ = (static_cast<double>(outDelta) * 8.0) / (elapsedSec * 1000.0 * 1000.0);
+
+                        const std::uint64_t wifiInDelta = wifiIn >= previousWifiIn_ ? wifiIn - previousWifiIn_ : 0;
+                        const std::uint64_t wifiOutDelta = wifiOut >= previousWifiOut_ ? wifiOut - previousWifiOut_ : 0;
+                        wifiDownloadMbps_ = (static_cast<double>(wifiInDelta) * 8.0) / (elapsedSec * 1000.0 * 1000.0);
+                        wifiUploadMbps_ = (static_cast<double>(wifiOutDelta) * 8.0) / (elapsedSec * 1000.0 * 1000.0);
+
+                        const std::uint64_t ethernetInDelta = ethernetIn >= previousEthernetIn_ ? ethernetIn - previousEthernetIn_ : 0;
+                        const std::uint64_t ethernetOutDelta = ethernetOut >= previousEthernetOut_ ? ethernetOut - previousEthernetOut_ : 0;
+                        ethernetDownloadMbps_ = (static_cast<double>(ethernetInDelta) * 8.0) / (elapsedSec * 1000.0 * 1000.0);
+                        ethernetUploadMbps_ = (static_cast<double>(ethernetOutDelta) * 8.0) / (elapsedSec * 1000.0 * 1000.0);
                     }
                 }
 
                 previousNetworkIn_ = totalIn;
                 previousNetworkOut_ = totalOut;
+                previousWifiIn_ = wifiIn;
+                previousWifiOut_ = wifiOut;
+                previousEthernetIn_ = ethernetIn;
+                previousEthernetOut_ = ethernetOut;
                 previousNetworkTickMs_ = nowMs;
                 networkSamplingReady_ = true;
             }
         }
 
+        UpdateNetworkAdapterInfo();
+
         gpuPercent_ = QueryGpuUsagePercent();
+
+        IDXGIFactory1 *factory = nullptr;
+        if (SUCCEEDED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), reinterpret_cast<void **>(&factory))))
+        {
+            IDXGIAdapter1 *adapter = nullptr;
+            if (factory->EnumAdapters1(0, &adapter) == S_OK)
+            {
+                DXGI_ADAPTER_DESC1 desc{};
+                if (SUCCEEDED(adapter->GetDesc1(&desc)))
+                {
+                    gpuAdapterName_ = desc.Description;
+                    gpuDedicatedGb_ = static_cast<double>(desc.DedicatedVideoMemory) / kBytesPerGiB;
+                    gpuSharedGb_ = static_cast<double>(desc.SharedSystemMemory) / kBytesPerGiB;
+
+                    std::wstringstream location;
+                    location << L"LUID " << desc.AdapterLuid.HighPart << L":" << desc.AdapterLuid.LowPart;
+                    gpuLocation_ = location.str();
+                }
+                adapter->Release();
+            }
+            factory->Release();
+        }
 
         PushHistory(cpuHistory_, totalCpuPercent_);
         PushHistory(memoryHistory_, memoryUsedGb_);
         PushHistory(gpuHistory_, gpuPercent_);
         PushHistory(uploadHistory_, uploadMbps_);
         PushHistory(downloadHistory_, downloadMbps_);
+        PushHistory(wifiUploadHistory_, wifiUploadMbps_);
+        PushHistory(wifiDownloadHistory_, wifiDownloadMbps_);
+        PushHistory(ethernetUploadHistory_, ethernetUploadMbps_);
+        PushHistory(ethernetDownloadHistory_, ethernetDownloadMbps_);
+        PushHistory(diskReadHistory_, diskReadMBps_);
+        PushHistory(diskWriteHistory_, diskWriteMBps_);
+        PushHistory(diskActiveHistory_, diskActivePercent_);
     }
 
     void MainWindow::RefreshPerformancePanel()
     {
-        if (!perfCoreGrid_)
+        if (!perfCoreGrid_ || !perfDetails_)
         {
             return;
         }
 
-        auto updateDynamicScale = [](double &scale, const std::deque<double> &history)
+        UpdateDynamicScale(uploadScaleMbps_, uploadHistory_, 0.5, 1.25);
+        UpdateDynamicScale(downloadScaleMbps_, downloadHistory_, 0.5, 1.25);
+        UpdateDynamicScale(wifiUploadScaleMbps_, wifiUploadHistory_, 0.5, 1.25);
+        UpdateDynamicScale(wifiDownloadScaleMbps_, wifiDownloadHistory_, 0.5, 1.25);
+        UpdateDynamicScale(ethernetUploadScaleMbps_, ethernetUploadHistory_, 0.5, 1.25);
+        UpdateDynamicScale(ethernetDownloadScaleMbps_, ethernetDownloadHistory_, 0.5, 1.25);
+        UpdateDynamicScale(diskReadScaleMBps_, diskReadHistory_, 1.0, 1.25);
+        UpdateDynamicScale(diskWriteScaleMBps_, diskWriteHistory_, 1.0, 1.25);
+
+        std::wstring title;
+        switch (activePerformanceView_)
         {
-            double peak = 0.0;
-            for (double value : history)
-            {
-                if (value > peak)
-                {
-                    peak = value;
-                }
-            }
+        case PerformanceView::Cpu:
+            title = L"CPU | Total and per-core activity";
+            break;
+        case PerformanceView::Memory:
+            title = L"Memory | Usage trend and allocation details";
+            break;
+        case PerformanceView::Disk:
+            title = L"Disk | Read/Write throughput and latency";
+            break;
+        case PerformanceView::Wifi:
+            title = L"Wi-Fi | Upload and download throughput";
+            break;
+        case PerformanceView::Ethernet:
+            title = L"Ethernet | Upload and download throughput";
+            break;
+        case PerformanceView::Gpu:
+            title = L"GPU | Utilization and memory overview";
+            break;
+        }
+        SetWindowTextW(performancePlaceholder_, title.c_str());
 
-            const double floor = 0.5;
-            double target = peak > 0.0 ? peak * 1.25 : floor;
-            target = (std::max)(floor, target);
-
-            if (scale <= 0.0)
-            {
-                scale = target;
-                return;
-            }
-
-            if (target > scale)
-            {
-                scale = target;
-            }
-            else
-            {
-                scale = scale * 0.88 + target * 0.12;
-            }
-
-            scale = (std::max)(floor, scale);
-        };
-
-        updateDynamicScale(uploadScaleMbps_, uploadHistory_);
-        updateDynamicScale(downloadScaleMbps_, downloadHistory_);
-
-        std::wstringstream caption;
-        caption << L"Live performance | CPU " << static_cast<int>(totalCpuPercent_ + 0.5)
-                << L"% | Memory " << FormatNumber(memoryUsedGb_, memoryTotalGb_ < 10.0 ? 1 : 0)
-                << L" / " << FormatNumber(memoryTotalGb_, memoryTotalGb_ < 10.0 ? 1 : 0)
-                << L" GB (" << static_cast<int>(memoryPercent_ + 0.5)
-                << L"%) | GPU " << static_cast<int>(gpuPercent_ + 0.5)
-                << L"% | Up " << FormatNumber(uploadMbps_, uploadMbps_ < 10.0 ? 1 : 0)
-                << L" Mbps | Down " << FormatNumber(downloadMbps_, downloadMbps_ < 10.0 ? 1 : 0) << L" Mbps";
-        SetWindowTextW(performancePlaceholder_, caption.str().c_str());
+        SetWindowTextW(perfDetails_, BuildPerformanceDetailsText().c_str());
 
         if (perfGraphCpu_)
             InvalidateRect(perfGraphCpu_, nullptr, FALSE);
@@ -2296,20 +2992,80 @@ namespace utm::ui
             cfg.showPercent = true;
             break;
         case kIdPerfGraphUpload:
-            cfg.history = &uploadHistory_;
-            cfg.title = L"Network Upload";
-            cfg.unit = L"Mbps";
-            cfg.lineColor = RGB(236, 150, 14);
-            cfg.latest = uploadMbps_;
-            cfg.maxValue = (std::max)(0.5, uploadScaleMbps_);
+            if (activePerformanceView_ == PerformanceView::Disk)
+            {
+                cfg.history = &diskReadHistory_;
+                cfg.title = L"Disk Read";
+                cfg.unit = L"MB/s";
+                cfg.lineColor = RGB(27, 145, 102);
+                cfg.latest = diskReadMBps_;
+                cfg.maxValue = (std::max)(1.0, diskReadScaleMBps_);
+            }
+            else if (activePerformanceView_ == PerformanceView::Wifi)
+            {
+                cfg.history = &wifiUploadHistory_;
+                cfg.title = L"Wi-Fi Upload";
+                cfg.unit = L"Mbps";
+                cfg.lineColor = RGB(236, 150, 14);
+                cfg.latest = wifiUploadMbps_;
+                cfg.maxValue = (std::max)(0.5, wifiUploadScaleMbps_);
+            }
+            else if (activePerformanceView_ == PerformanceView::Ethernet)
+            {
+                cfg.history = &ethernetUploadHistory_;
+                cfg.title = L"Ethernet Upload";
+                cfg.unit = L"Mbps";
+                cfg.lineColor = RGB(236, 150, 14);
+                cfg.latest = ethernetUploadMbps_;
+                cfg.maxValue = (std::max)(0.5, ethernetUploadScaleMbps_);
+            }
+            else
+            {
+                cfg.history = &uploadHistory_;
+                cfg.title = L"Network Upload";
+                cfg.unit = L"Mbps";
+                cfg.lineColor = RGB(236, 150, 14);
+                cfg.latest = uploadMbps_;
+                cfg.maxValue = (std::max)(0.5, uploadScaleMbps_);
+            }
             break;
         case kIdPerfGraphDownload:
-            cfg.history = &downloadHistory_;
-            cfg.title = L"Network Download";
-            cfg.unit = L"Mbps";
-            cfg.lineColor = RGB(225, 76, 88);
-            cfg.latest = downloadMbps_;
-            cfg.maxValue = (std::max)(0.5, downloadScaleMbps_);
+            if (activePerformanceView_ == PerformanceView::Disk)
+            {
+                cfg.history = &diskWriteHistory_;
+                cfg.title = L"Disk Write";
+                cfg.unit = L"MB/s";
+                cfg.lineColor = RGB(208, 73, 86);
+                cfg.latest = diskWriteMBps_;
+                cfg.maxValue = (std::max)(1.0, diskWriteScaleMBps_);
+            }
+            else if (activePerformanceView_ == PerformanceView::Wifi)
+            {
+                cfg.history = &wifiDownloadHistory_;
+                cfg.title = L"Wi-Fi Download";
+                cfg.unit = L"Mbps";
+                cfg.lineColor = RGB(225, 76, 88);
+                cfg.latest = wifiDownloadMbps_;
+                cfg.maxValue = (std::max)(0.5, wifiDownloadScaleMbps_);
+            }
+            else if (activePerformanceView_ == PerformanceView::Ethernet)
+            {
+                cfg.history = &ethernetDownloadHistory_;
+                cfg.title = L"Ethernet Download";
+                cfg.unit = L"Mbps";
+                cfg.lineColor = RGB(225, 76, 88);
+                cfg.latest = ethernetDownloadMbps_;
+                cfg.maxValue = (std::max)(0.5, ethernetDownloadScaleMbps_);
+            }
+            else
+            {
+                cfg.history = &downloadHistory_;
+                cfg.title = L"Network Download";
+                cfg.unit = L"Mbps";
+                cfg.lineColor = RGB(225, 76, 88);
+                cfg.latest = downloadMbps_;
+                cfg.maxValue = (std::max)(0.5, downloadScaleMbps_);
+            }
             break;
         default:
             return;
@@ -2588,7 +3344,7 @@ namespace utm::ui
         const int gridWidth = (std::max)(1, static_cast<int>(grid.right - grid.left));
         const int gridHeight = (std::max)(1, static_cast<int>(grid.bottom - grid.top));
 
-        int columns = (std::max)(1, gridWidth / 150);
+        int columns = (std::max)(1, gridWidth / 130);
         columns = (std::min)(columns, static_cast<int>(coreCount));
         int rows = static_cast<int>((coreCount + static_cast<size_t>(columns) - 1) / static_cast<size_t>(columns));
 
@@ -2601,14 +3357,14 @@ namespace utm::ui
             }
 
             const int candidateTileWidth = (gridWidth - gap * (nextColumns - 1)) / nextColumns;
-            if (candidateTileWidth < 96)
+            if (candidateTileWidth < 90)
             {
                 break;
             }
 
             const int candidateRows = static_cast<int>((coreCount + static_cast<size_t>(nextColumns) - 1) / static_cast<size_t>(nextColumns));
             const int candidateTileHeight = (gridHeight - gap * (candidateRows - 1)) / candidateRows;
-            if (candidateTileHeight < 50)
+            if (candidateTileHeight < 44)
             {
                 break;
             }
@@ -2617,8 +3373,8 @@ namespace utm::ui
             rows = candidateRows;
         }
 
-        const int tileWidth = (std::max)(96, (gridWidth - gap * (columns - 1)) / columns);
-        const int tileHeight = (std::max)(50, (gridHeight - gap * (rows - 1)) / rows);
+        const int tileWidth = (std::max)(90, (std::min)(180, (gridWidth - gap * (columns - 1)) / columns));
+        const int tileHeight = (std::max)(44, (std::min)(72, (gridHeight - gap * (rows - 1)) / rows));
 
         constexpr COLORREF kCorePalette[] = {
             RGB(68, 128, 245), RGB(25, 173, 123), RGB(130, 102, 246), RGB(229, 140, 28),

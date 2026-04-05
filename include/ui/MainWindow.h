@@ -55,6 +55,16 @@ namespace utm::ui
             QuickKillTools
         };
 
+        enum class PerformanceView
+        {
+            Cpu,
+            Memory,
+            Disk,
+            Wifi,
+            Ethernet,
+            Gpu
+        };
+
         static LRESULT CALLBACK WndProcSetup(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
         static LRESULT CALLBACK WndProcThunk(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
 
@@ -67,10 +77,14 @@ namespace utm::ui
         void SetActiveSection(Section section);
         void UpdateSidebarSelection();
         std::wstring SectionTitleText() const;
+        void SetActivePerformanceView(PerformanceView view);
+        void UpdatePerformanceSubviewSelection();
         void UpdatePerformanceMetrics();
+        void UpdateNetworkAdapterInfo();
         void RefreshPerformancePanel();
         void DrawPerformanceGraph(const DRAWITEMSTRUCT *draw) const;
         void DrawCoreGrid(const DRAWITEMSTRUCT *draw) const;
+        std::wstring BuildPerformanceDetailsText() const;
         static void PushHistory(std::deque<double> &history, double value, size_t maxSamples = 90);
         double QueryGpuUsagePercent();
 
@@ -109,12 +123,20 @@ namespace utm::ui
         HWND filterEdit_ = nullptr;
         HWND processList_ = nullptr;
         HWND performancePlaceholder_ = nullptr;
+        HWND perfNavPanel_ = nullptr;
+        HWND perfNavCpu_ = nullptr;
+        HWND perfNavMemory_ = nullptr;
+        HWND perfNavDisk_ = nullptr;
+        HWND perfNavWifi_ = nullptr;
+        HWND perfNavEthernet_ = nullptr;
+        HWND perfNavGpu_ = nullptr;
         HWND perfCoreGrid_ = nullptr;
         HWND perfGraphCpu_ = nullptr;
         HWND perfGraphMemory_ = nullptr;
         HWND perfGraphGpu_ = nullptr;
         HWND perfGraphUpload_ = nullptr;
         HWND perfGraphDownload_ = nullptr;
+        HWND perfDetails_ = nullptr;
         HWND networkPlaceholder_ = nullptr;
         HWND hardwarePlaceholder_ = nullptr;
         HWND servicesPlaceholder_ = nullptr;
@@ -161,6 +183,10 @@ namespace utm::ui
 
         std::uint64_t previousNetworkIn_ = 0;
         std::uint64_t previousNetworkOut_ = 0;
+        std::uint64_t previousWifiIn_ = 0;
+        std::uint64_t previousWifiOut_ = 0;
+        std::uint64_t previousEthernetIn_ = 0;
+        std::uint64_t previousEthernetOut_ = 0;
         std::uint64_t previousNetworkTickMs_ = 0;
         bool networkSamplingReady_ = false;
 
@@ -171,22 +197,63 @@ namespace utm::ui
         double gpuPercent_ = 0.0;
         double uploadMbps_ = 0.0;
         double downloadMbps_ = 0.0;
+        double wifiUploadMbps_ = 0.0;
+        double wifiDownloadMbps_ = 0.0;
+        double ethernetUploadMbps_ = 0.0;
+        double ethernetDownloadMbps_ = 0.0;
+        double diskReadMBps_ = 0.0;
+        double diskWriteMBps_ = 0.0;
+        double diskActivePercent_ = 0.0;
+        double diskAvgResponseMs_ = 0.0;
         double uploadScaleMbps_ = 6.0;
         double downloadScaleMbps_ = 6.0;
+        double wifiUploadScaleMbps_ = 6.0;
+        double wifiDownloadScaleMbps_ = 6.0;
+        double ethernetUploadScaleMbps_ = 6.0;
+        double ethernetDownloadScaleMbps_ = 6.0;
+        double diskReadScaleMBps_ = 10.0;
+        double diskWriteScaleMBps_ = 10.0;
+        double gpuDedicatedGb_ = 0.0;
+        double gpuSharedGb_ = 0.0;
         bool gpuCounterReady_ = false;
+        bool diskCounterReady_ = false;
+
+        std::wstring wifiAdapterName_;
+        std::wstring wifiIpv4_;
+        std::wstring wifiIpv6_;
+        std::wstring ethernetAdapterName_;
+        std::wstring ethernetIpv4_;
+        std::wstring ethernetIpv6_;
+        std::wstring gpuAdapterName_;
+        std::wstring gpuLocation_;
+        std::wstring diskType_;
+        std::wstring systemDrive_;
 
         std::deque<double> cpuHistory_;
         std::deque<double> memoryHistory_;
         std::deque<double> gpuHistory_;
         std::deque<double> uploadHistory_;
         std::deque<double> downloadHistory_;
+        std::deque<double> wifiUploadHistory_;
+        std::deque<double> wifiDownloadHistory_;
+        std::deque<double> ethernetUploadHistory_;
+        std::deque<double> ethernetDownloadHistory_;
+        std::deque<double> diskReadHistory_;
+        std::deque<double> diskWriteHistory_;
+        std::deque<double> diskActiveHistory_;
 
         PDH_HQUERY gpuQuery_ = nullptr;
         PDH_HCOUNTER gpuCounter_ = nullptr;
+        PDH_HQUERY diskQuery_ = nullptr;
+        PDH_HCOUNTER diskReadCounter_ = nullptr;
+        PDH_HCOUNTER diskWriteCounter_ = nullptr;
+        PDH_HCOUNTER diskActiveCounter_ = nullptr;
+        PDH_HCOUNTER diskLatencyCounter_ = nullptr;
 
         SortColumn sortColumn_ = SortColumn::Cpu;
         bool sortAscending_ = false;
         Section activeSection_ = Section::QuickKillTools;
+        PerformanceView activePerformanceView_ = PerformanceView::Cpu;
 
         std::wstring quickDeleteTargetPath_;
         bool quickDeleteTargetIsDirectory_ = false;
