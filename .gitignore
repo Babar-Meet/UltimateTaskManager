@@ -1,0 +1,16 @@
+build/
+out/
+.vs/
+.vscode/
+*.VC.db
+*.VC.opendb
+*.user
+*.obj
+*.pdb
+*.ilk
+*.log
+*.tlog
+*.recipe
+*.lastbuildstate
+*.idb
+*.ipch
