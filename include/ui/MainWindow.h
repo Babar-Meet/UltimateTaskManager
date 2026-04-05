@@ -5,6 +5,7 @@
 
 #include <windows.h>
 #include <pdh.h>
+#include <dxgi1_6.h>
 
 #include <deque>
 #include <string>
@@ -88,6 +89,49 @@ namespace utm::ui
         std::wstring BuildPerformanceDetailsText() const;
         static void PushHistory(std::deque<double> &history, double value, size_t maxSamples = 90);
         double QueryGpuUsagePercent();
+        static double CalculateMemoryAxisTopGb(double totalMemoryGb);
+
+        struct NetworkInterfacePerf
+        {
+            std::wstring key;
+            std::wstring adapterName;
+            std::wstring ipv4 = L"N/A";
+            std::wstring ipv6 = L"N/A";
+            ULONG ifType = 0;
+            ULONG ifIndex = 0;
+            std::uint64_t previousInBytes = 0;
+            std::uint64_t previousOutBytes = 0;
+            bool hasPreviousSample = false;
+
+            double uploadMbps = 0.0;
+            double downloadMbps = 0.0;
+            double uploadScaleMbps = 6.0;
+            double downloadScaleMbps = 6.0;
+            std::deque<double> uploadHistory;
+            std::deque<double> downloadHistory;
+        };
+
+        struct GpuPerf
+        {
+            LUID luid{};
+            std::wstring name;
+            std::wstring location;
+
+            double utilizationPercent = 0.0;
+            double engine3dPercent = 0.0;
+            double engineCopyPercent = 0.0;
+            double engineDecodePercent = 0.0;
+            double engineEncodePercent = 0.0;
+
+            double dedicatedGb = 0.0;
+            double sharedGb = 0.0;
+            double dedicatedUsedGb = 0.0;
+            double sharedUsedGb = 0.0;
+
+            std::deque<double> utilizationHistory;
+            std::deque<double> dedicatedHistory;
+            std::deque<double> sharedHistory;
+        };
 
         void HandleSnapshotUpdate();
         void RefreshProcessView();
@@ -183,19 +227,16 @@ namespace utm::ui
         std::vector<std::uint64_t> previousCpuTotal_;
         bool cpuSamplingReady_ = false;
 
-        std::uint64_t previousNetworkIn_ = 0;
-        std::uint64_t previousNetworkOut_ = 0;
-        std::uint64_t previousWifiIn_ = 0;
-        std::uint64_t previousWifiOut_ = 0;
-        std::uint64_t previousEthernetIn_ = 0;
-        std::uint64_t previousEthernetOut_ = 0;
         std::uint64_t previousNetworkTickMs_ = 0;
         bool networkSamplingReady_ = false;
+        std::vector<NetworkInterfacePerf> networkInterfaces_;
+        std::vector<GpuPerf> gpuDevices_;
 
         double totalCpuPercent_ = 0.0;
         double memoryPercent_ = 0.0;
         double memoryUsedGb_ = 0.0;
         double memoryTotalGb_ = 0.0;
+        double memoryAxisTopGb_ = 1.0;
         double memoryAvailableGb_ = 0.0;
         double memoryCommittedGb_ = 0.0;
         double memoryCommitLimitGb_ = 0.0;

@@ -10,6 +10,8 @@
 #include <commdlg.h>
 #include <dxgi1_6.h>
 #include <iphlpapi.h>
+#include <netioapi.h>
+#include <pdhmsg.h>
 #include <psapi.h>
 #include <shlobj.h>
 #include <strsafe.h>
@@ -18,6 +20,7 @@
 #include <ws2tcpip.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <cwctype>
 #include <filesystem>
@@ -158,6 +161,87 @@ namespace
         }
 
         return text;
+    }
+
+    std::uint64_t MakeLuidKey(LUID luid)
+    {
+        const auto high = static_cast<std::uint32_t>(luid.HighPart);
+        return (static_cast<std::uint64_t>(high) << 32) | static_cast<std::uint64_t>(luid.LowPart);
+    }
+
+    bool IsHexDigit(wchar_t ch)
+    {
+        return (ch >= L'0' && ch <= L'9') ||
+               (ch >= L'a' && ch <= L'f') ||
+               (ch >= L'A' && ch <= L'F');
+    }
+
+    bool TryParseHexUlong(const std::wstring &text, size_t start, size_t &end, unsigned long &value)
+    {
+        end = start;
+        while (end < text.size() && IsHexDigit(text[end]))
+        {
+            ++end;
+        }
+
+        if (end <= start)
+        {
+            return false;
+        }
+
+        const std::wstring token = text.substr(start, end - start);
+        value = std::wcstoul(token.c_str(), nullptr, 16);
+        return true;
+    }
+
+    bool TryExtractLuidFromGpuInstanceName(const std::wstring &instanceName, LUID &luid)
+    {
+        std::wstring lowered = instanceName;
+        std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](wchar_t ch)
+                       { return static_cast<wchar_t>(std::towlower(ch)); });
+        const size_t luidTag = lowered.find(L"luid_0x");
+        if (luidTag == std::wstring::npos)
+        {
+            return false;
+        }
+
+        size_t pos = luidTag + 7;
+        unsigned long highPart = 0;
+        size_t afterHigh = pos;
+        if (!TryParseHexUlong(lowered, pos, afterHigh, highPart))
+        {
+            return false;
+        }
+
+        const size_t separator = lowered.find(L"_0x", afterHigh);
+        if (separator == std::wstring::npos)
+        {
+            return false;
+        }
+
+        unsigned long lowPart = 0;
+        size_t lowEnd = separator + 3;
+        if (!TryParseHexUlong(lowered, separator + 3, lowEnd, lowPart))
+        {
+            return false;
+        }
+
+        luid.HighPart = static_cast<LONG>(highPart);
+        luid.LowPart = lowPart;
+        return true;
+    }
+
+    int NetworkTypeRank(ULONG ifType)
+    {
+        if (ifType == IF_TYPE_IEEE80211)
+        {
+            return 0;
+        }
+        if (ifType == IF_TYPE_ETHERNET_CSMACD)
+        {
+            return 1;
+        }
+        return 2;
     }
 
     std::wstring SockaddrToIpString(const SOCKADDR *sockaddr)
@@ -1343,7 +1427,14 @@ namespace utm::ui
 
         case WM_MOUSEWHEEL:
         {
-            if (activeSection_ == Section::Performance && activePerformanceView_ == PerformanceView::All && perfCoreGrid_)
+            const bool scrollableCardsView =
+                activeSection_ == Section::Performance &&
+                (activePerformanceView_ == PerformanceView::All ||
+                 activePerformanceView_ == PerformanceView::Wifi ||
+                 activePerformanceView_ == PerformanceView::Ethernet ||
+                 activePerformanceView_ == PerformanceView::Gpu);
+
+            if (scrollableCardsView && perfCoreGrid_)
             {
                 RECT area{};
                 GetWindowRect(perfCoreGrid_, &area);
@@ -2148,33 +2239,16 @@ namespace utm::ui
             MoveWindow(perfGraphMemory_, perfMainX, perfGraphTop, perfMainWidth, memMainHeight, TRUE);
             MoveWindow(perfGraphGpu_, perfMainX, perfGraphTop + memMainHeight + perfGap, perfMainWidth, memSubHeight, TRUE);
         }
-        else if (activePerformanceView_ == PerformanceView::Disk ||
-                 activePerformanceView_ == PerformanceView::Wifi ||
-                 activePerformanceView_ == PerformanceView::Ethernet)
+        else if (activePerformanceView_ == PerformanceView::Disk)
         {
             const int perfHalfWidth = (perfMainWidth - perfGap) / 2;
             MoveWindow(perfGraphUpload_, perfMainX, perfGraphTop, perfHalfWidth, perfGraphHeight, TRUE);
             MoveWindow(perfGraphDownload_, perfMainX + perfHalfWidth + perfGap, perfGraphTop, perfMainWidth - perfHalfWidth - perfGap, perfGraphHeight, TRUE);
         }
-        else if (activePerformanceView_ == PerformanceView::Gpu)
-        {
-            const int cols = 2;
-            const int rows = 3;
-            const int cardWidth = (perfMainWidth - perfGap) / cols;
-            const int cardHeight = (std::max)(80, (perfGraphHeight - perfGap * (rows - 1)) / rows);
-
-            const int row1 = perfGraphTop;
-            const int row2 = row1 + cardHeight + perfGap;
-            const int row3 = row2 + cardHeight + perfGap;
-
-            MoveWindow(perfGraphCpu_, perfMainX, row1, cardWidth, cardHeight, TRUE);
-            MoveWindow(perfGraphMemory_, perfMainX + cardWidth + perfGap, row1, perfMainWidth - cardWidth - perfGap, cardHeight, TRUE);
-            MoveWindow(perfGraphUpload_, perfMainX, row2, cardWidth, cardHeight, TRUE);
-            MoveWindow(perfGraphDownload_, perfMainX + cardWidth + perfGap, row2, perfMainWidth - cardWidth - perfGap, cardHeight, TRUE);
-            MoveWindow(perfGraphGpu_, perfMainX, row3, cardWidth, cardHeight, TRUE);
-            MoveWindow(perfCoreGrid_, perfMainX + cardWidth + perfGap, row3, perfMainWidth - cardWidth - perfGap, cardHeight, TRUE);
-        }
-        else if (activePerformanceView_ == PerformanceView::All)
+        else if (activePerformanceView_ == PerformanceView::Wifi ||
+                 activePerformanceView_ == PerformanceView::Ethernet ||
+                 activePerformanceView_ == PerformanceView::Gpu ||
+                 activePerformanceView_ == PerformanceView::All)
         {
             MoveWindow(perfCoreGrid_, perfMainX, perfGraphTop, perfMainWidth, perfGraphHeight, TRUE);
         }
@@ -2251,12 +2325,12 @@ namespace utm::ui
         const bool showEthernet = perfTab && activePerformanceView_ == PerformanceView::Ethernet;
         const bool showGpu = perfTab && activePerformanceView_ == PerformanceView::Gpu;
 
-        ShowWindow(perfGraphCpu_, (showCpu || showGpu) ? SW_SHOW : SW_HIDE);
-        ShowWindow(perfGraphMemory_, (showMemory || showGpu) ? SW_SHOW : SW_HIDE);
-        ShowWindow(perfGraphGpu_, (showMemory || showGpu) ? SW_SHOW : SW_HIDE);
-        ShowWindow(perfCoreGrid_, (showCpu || showGpu || showAll) ? SW_SHOW : SW_HIDE);
+        ShowWindow(perfGraphCpu_, showCpu ? SW_SHOW : SW_HIDE);
+        ShowWindow(perfGraphMemory_, showMemory ? SW_SHOW : SW_HIDE);
+        ShowWindow(perfGraphGpu_, showMemory ? SW_SHOW : SW_HIDE);
+        ShowWindow(perfCoreGrid_, (showCpu || showGpu || showAll || showWifi || showEthernet) ? SW_SHOW : SW_HIDE);
 
-        const bool showDualThroughput = showDisk || showWifi || showEthernet || showGpu;
+        const bool showDualThroughput = showDisk;
         ShowWindow(perfGraphUpload_, showDualThroughput ? SW_SHOW : SW_HIDE);
         ShowWindow(perfGraphDownload_, showDualThroughput ? SW_SHOW : SW_HIDE);
 
@@ -2291,7 +2365,10 @@ namespace utm::ui
         }
 
         activePerformanceView_ = view;
-        if (activePerformanceView_ == PerformanceView::All)
+        if (activePerformanceView_ == PerformanceView::All ||
+            activePerformanceView_ == PerformanceView::Wifi ||
+            activePerformanceView_ == PerformanceView::Ethernet ||
+            activePerformanceView_ == PerformanceView::Gpu)
         {
             perfAllScrollOffset_ = 0;
         }
@@ -2425,85 +2502,26 @@ namespace utm::ui
         }
     }
 
+    double MainWindow::CalculateMemoryAxisTopGb(double totalMemoryGb)
+    {
+        if (totalMemoryGb <= 0.0)
+        {
+            return 1.0;
+        }
+
+        const double rounded = std::round(totalMemoryGb);
+        return (std::max)(1.0, rounded);
+    }
+
     double MainWindow::QueryGpuUsagePercent()
     {
-        if (!gpuCounterReady_ || !gpuQuery_ || !gpuCounter_)
+        double highest = 0.0;
+        for (const auto &gpu : gpuDevices_)
         {
-            gpu3dPercent_ = 0.0;
-            gpuCopyPercent_ = 0.0;
-            gpuDecodePercent_ = 0.0;
-            gpuEncodePercent_ = 0.0;
-            return 0.0;
+            highest = (std::max)(highest, gpu.utilizationPercent);
         }
 
-        if (PdhCollectQueryData(gpuQuery_) != ERROR_SUCCESS)
-        {
-            return 0.0;
-        }
-
-        DWORD bufferSize = 0;
-        DWORD itemCount = 0;
-        PDH_STATUS status = PdhGetFormattedCounterArrayW(gpuCounter_, PDH_FMT_DOUBLE, &bufferSize, &itemCount, nullptr);
-        if (status != ERROR_SUCCESS && bufferSize == 0)
-        {
-            return 0.0;
-        }
-
-        if (bufferSize == 0 || itemCount == 0)
-        {
-            return 0.0;
-        }
-
-        std::vector<std::uint8_t> buffer(bufferSize);
-        auto *items = reinterpret_cast<PPDH_FMT_COUNTERVALUE_ITEM_W>(buffer.data());
-        status = PdhGetFormattedCounterArrayW(gpuCounter_, PDH_FMT_DOUBLE, &bufferSize, &itemCount, items);
-        if (status != ERROR_SUCCESS)
-        {
-            return 0.0;
-        }
-
-        double engine3d = 0.0;
-        double engineCopy = 0.0;
-        double engineDecode = 0.0;
-        double engineEncode = 0.0;
-        double total = 0.0;
-        for (DWORD i = 0; i < itemCount; ++i)
-        {
-            if (items[i].FmtValue.CStatus == ERROR_SUCCESS && items[i].FmtValue.doubleValue > 0.0)
-            {
-                const double value = items[i].FmtValue.doubleValue;
-                total += value;
-
-                const std::wstring name = items[i].szName ? ToLower(items[i].szName) : L"";
-                if (name.find(L"engtype_3d") != std::wstring::npos)
-                {
-                    engine3d += value;
-                }
-                else if (name.find(L"engtype_copy") != std::wstring::npos)
-                {
-                    engineCopy += value;
-                }
-                else if (name.find(L"engtype_videodecode") != std::wstring::npos ||
-                         name.find(L"engtype_video decode") != std::wstring::npos)
-                {
-                    engineDecode += value;
-                }
-                else if (name.find(L"engtype_videoencode") != std::wstring::npos ||
-                         name.find(L"engtype_video encode") != std::wstring::npos)
-                {
-                    engineEncode += value;
-                }
-            }
-        }
-
-        gpu3dPercent_ = (std::clamp)(engine3d, 0.0, 100.0);
-        gpuCopyPercent_ = (std::clamp)(engineCopy, 0.0, 100.0);
-        gpuDecodePercent_ = (std::clamp)(engineDecode, 0.0, 100.0);
-        gpuEncodePercent_ = (std::clamp)(engineEncode, 0.0, 100.0);
-
-        const double byEngine = (std::max)((std::max)(gpu3dPercent_, gpuCopyPercent_), (std::max)(gpuDecodePercent_, gpuEncodePercent_));
-        const double fallback = (std::clamp)(total, 0.0, 100.0);
-        return byEngine > 0.0 ? byEngine : fallback;
+        return highest;
     }
 
     void MainWindow::UpdateNetworkAdapterInfo()
@@ -2533,6 +2551,15 @@ namespace utm::ui
             return;
         }
 
+        std::unordered_map<std::wstring, NetworkInterfacePerf> previousByKey;
+        previousByKey.reserve(networkInterfaces_.size());
+        for (auto &iface : networkInterfaces_)
+        {
+            previousByKey.emplace(iface.key, std::move(iface));
+        }
+
+        std::vector<NetworkInterfacePerf> refreshed;
+
         for (const auto *adapter = adapters; adapter; adapter = adapter->Next)
         {
             if (adapter->OperStatus != IfOperStatusUp)
@@ -2540,24 +2567,26 @@ namespace utm::ui
                 continue;
             }
 
-            const bool isWifi = adapter->IfType == IF_TYPE_IEEE80211;
-            const bool isEthernet = adapter->IfType == IF_TYPE_ETHERNET_CSMACD;
-            if (!isWifi && !isEthernet)
+            if (adapter->IfType == IF_TYPE_SOFTWARE_LOOPBACK || adapter->IfType == IF_TYPE_TUNNEL)
             {
                 continue;
             }
 
-            std::wstring *name = isWifi ? &wifiAdapterName_ : &ethernetAdapterName_;
-            std::wstring *ipv4 = isWifi ? &wifiIpv4_ : &ethernetIpv4_;
-            std::wstring *ipv6 = isWifi ? &wifiIpv6_ : &ethernetIpv6_;
-
-            if (name->empty() || *name == L"N/A")
+            const std::wstring key = std::to_wstring(adapter->Luid.Value);
+            NetworkInterfacePerf iface{};
+            if (const auto it = previousByKey.find(key); it != previousByKey.end())
             {
-                if (adapter->FriendlyName && adapter->FriendlyName[0] != L'\0')
-                {
-                    *name = adapter->FriendlyName;
-                }
+                iface = std::move(it->second);
             }
+
+            iface.key = key;
+            iface.ifType = adapter->IfType;
+            iface.ifIndex = adapter->IfIndex;
+            iface.adapterName = (adapter->FriendlyName && adapter->FriendlyName[0] != L'\0')
+                                    ? adapter->FriendlyName
+                                    : (L"Interface " + std::to_wstring(adapter->IfIndex));
+            iface.ipv4 = L"N/A";
+            iface.ipv6 = L"N/A";
 
             for (const auto *unicast = adapter->FirstUnicastAddress; unicast; unicast = unicast->Next)
             {
@@ -2566,15 +2595,46 @@ namespace utm::ui
                     continue;
                 }
 
-                if (unicast->Address.lpSockaddr->sa_family == AF_INET && *ipv4 == L"N/A")
+                if (unicast->Address.lpSockaddr->sa_family == AF_INET && iface.ipv4 == L"N/A")
                 {
-                    *ipv4 = SockaddrToIpString(unicast->Address.lpSockaddr);
+                    iface.ipv4 = SockaddrToIpString(unicast->Address.lpSockaddr);
                 }
 
-                if (unicast->Address.lpSockaddr->sa_family == AF_INET6 && *ipv6 == L"N/A")
+                if (unicast->Address.lpSockaddr->sa_family == AF_INET6 && iface.ipv6 == L"N/A")
                 {
-                    *ipv6 = SockaddrToIpString(unicast->Address.lpSockaddr);
+                    iface.ipv6 = SockaddrToIpString(unicast->Address.lpSockaddr);
                 }
+            }
+
+            refreshed.push_back(std::move(iface));
+        }
+
+        std::sort(refreshed.begin(), refreshed.end(), [](const NetworkInterfacePerf &a, const NetworkInterfacePerf &b)
+                  {
+                      const int rankA = NetworkTypeRank(a.ifType);
+                      const int rankB = NetworkTypeRank(b.ifType);
+                      if (rankA != rankB)
+                      {
+                          return rankA < rankB;
+                      }
+                      return a.adapterName < b.adapterName; });
+
+        networkInterfaces_ = std::move(refreshed);
+
+        for (const auto &iface : networkInterfaces_)
+        {
+            if (iface.ifType == IF_TYPE_IEEE80211 && wifiAdapterName_ == L"N/A")
+            {
+                wifiAdapterName_ = iface.adapterName;
+                wifiIpv4_ = iface.ipv4;
+                wifiIpv6_ = iface.ipv6;
+            }
+
+            if (iface.ifType == IF_TYPE_ETHERNET_CSMACD && ethernetAdapterName_ == L"N/A")
+            {
+                ethernetAdapterName_ = iface.adapterName;
+                ethernetIpv4_ = iface.ipv4;
+                ethernetIpv6_ = iface.ipv6;
             }
         }
     }
@@ -2586,15 +2646,13 @@ namespace utm::ui
         switch (activePerformanceView_)
         {
         case PerformanceView::All:
-            text << L"Overview mode: all available graphs in one scrollable canvas.\r\n"
+            text << L"Overview mode: all detected devices are rendered in one scrollable canvas.\r\n"
                  << L"CPU " << static_cast<int>(totalCpuPercent_ + 0.5) << L"% | Memory " << FormatNumber(memoryUsedGb_, 1) << L" / " << FormatNumber(memoryTotalGb_, 1) << L" GB\r\n"
                  << L"Disk R/W " << FormatNumber(diskReadMBps_, 1) << L" / " << FormatNumber(diskWriteMBps_, 1) << L" MB/s | Active " << static_cast<int>(diskActivePercent_ + 0.5) << L"%\r\n"
-                 << L"Wi-Fi U/D " << FormatNumber(wifiUploadMbps_, 1) << L" / " << FormatNumber(wifiDownloadMbps_, 1) << L" Mbps\r\n"
-                 << L"Ethernet U/D " << FormatNumber(ethernetUploadMbps_, 1) << L" / " << FormatNumber(ethernetDownloadMbps_, 1) << L" Mbps\r\n"
-                 << L"GPU " << static_cast<int>(gpuPercent_ + 0.5) << L"% | 3D " << static_cast<int>(gpu3dPercent_ + 0.5)
-                 << L"% | Copy " << static_cast<int>(gpuCopyPercent_ + 0.5)
-                 << L"% | Decode " << static_cast<int>(gpuDecodePercent_ + 0.5)
-                 << L"% | Encode " << static_cast<int>(gpuEncodePercent_ + 0.5) << L"%";
+                 << L"Network interfaces: " << networkInterfaces_.size()
+                 << L" | Total U/D " << FormatNumber(uploadMbps_, 1) << L" / " << FormatNumber(downloadMbps_, 1) << L" Mbps\r\n"
+                 << L"Detected GPUs: " << gpuDevices_.size()
+                 << L" | Peak GPU " << static_cast<int>(gpuPercent_ + 0.5) << L"%";
             break;
 
         case PerformanceView::Cpu:
@@ -2749,37 +2807,97 @@ namespace utm::ui
         }
 
         case PerformanceView::Wifi:
-            text << L"Adapter: " << wifiAdapterName_ << L"\r\n"
-                 << L"Upload: " << FormatNumber(wifiUploadMbps_, wifiUploadMbps_ < 10.0 ? 2 : 1) << L" Mbps\r\n"
-                 << L"Download: " << FormatNumber(wifiDownloadMbps_, wifiDownloadMbps_ < 10.0 ? 2 : 1) << L" Mbps\r\n"
-                 << L"Connection type: Wi-Fi\r\n"
-                 << L"IPv4: " << wifiIpv4_ << L"\r\n"
-                 << L"IPv6: " << wifiIpv6_ << L"\r\n"
-                 << L"SSID: N/A (WLAN API pending) | Signal strength: N/A";
+        {
+            bool hasWifi = false;
+            size_t wifiIndex = 0;
+            for (const auto &iface : networkInterfaces_)
+            {
+                if (iface.ifType != IF_TYPE_IEEE80211)
+                {
+                    continue;
+                }
+
+                if (hasWifi)
+                {
+                    text << L"\r\n\r\n";
+                }
+
+                text << L"Wi-Fi " << wifiIndex << L": " << iface.adapterName << L"\r\n"
+                     << L"Upload: " << FormatNumber(iface.uploadMbps, iface.uploadMbps < 10.0 ? 2 : 1) << L" Mbps\r\n"
+                     << L"Download: " << FormatNumber(iface.downloadMbps, iface.downloadMbps < 10.0 ? 2 : 1) << L" Mbps\r\n"
+                     << L"IPv4: " << iface.ipv4 << L"\r\n"
+                     << L"IPv6: " << iface.ipv6;
+                hasWifi = true;
+                ++wifiIndex;
+            }
+
+            if (!hasWifi)
+            {
+                text << L"No active Wi-Fi interfaces were detected.";
+            }
             break;
+        }
 
         case PerformanceView::Ethernet:
-            text << L"Adapter: " << ethernetAdapterName_ << L"\r\n"
-                 << L"Upload: " << FormatNumber(ethernetUploadMbps_, ethernetUploadMbps_ < 10.0 ? 2 : 1) << L" Mbps\r\n"
-                 << L"Download: " << FormatNumber(ethernetDownloadMbps_, ethernetDownloadMbps_ < 10.0 ? 2 : 1) << L" Mbps\r\n"
-                 << L"Connection type: Ethernet\r\n"
-                 << L"IPv4: " << ethernetIpv4_ << L"\r\n"
-                 << L"IPv6: " << ethernetIpv6_;
+        {
+            bool hasEthernet = false;
+            size_t ethernetIndex = 0;
+            for (const auto &iface : networkInterfaces_)
+            {
+                if (iface.ifType != IF_TYPE_ETHERNET_CSMACD)
+                {
+                    continue;
+                }
+
+                if (hasEthernet)
+                {
+                    text << L"\r\n\r\n";
+                }
+
+                text << L"Ethernet " << ethernetIndex << L": " << iface.adapterName << L"\r\n"
+                     << L"Upload: " << FormatNumber(iface.uploadMbps, iface.uploadMbps < 10.0 ? 2 : 1) << L" Mbps\r\n"
+                     << L"Download: " << FormatNumber(iface.downloadMbps, iface.downloadMbps < 10.0 ? 2 : 1) << L" Mbps\r\n"
+                     << L"IPv4: " << iface.ipv4 << L"\r\n"
+                     << L"IPv6: " << iface.ipv6;
+                hasEthernet = true;
+                ++ethernetIndex;
+            }
+
+            if (!hasEthernet)
+            {
+                text << L"No active Ethernet interfaces were detected.";
+            }
             break;
+        }
 
         case PerformanceView::Gpu:
-            text << L"Utilization: " << static_cast<int>(gpuPercent_ + 0.5) << L"%\r\n"
-                 << L"Adapters: " << (gpuAdaptersSummary_.empty() ? L"N/A" : gpuAdaptersSummary_) << L"\r\n"
-                 << L"3D: " << static_cast<int>(gpu3dPercent_ + 0.5)
-                 << L"% | Copy: " << static_cast<int>(gpuCopyPercent_ + 0.5)
-                 << L"% | Decode: " << static_cast<int>(gpuDecodePercent_ + 0.5)
-                 << L"% | Encode: " << static_cast<int>(gpuEncodePercent_ + 0.5) << L"%\r\n"
-                 << L"Dedicated memory: " << FormatNumber(gpuDedicatedUsedGb_, 1) << L" / " << FormatNumber(gpuDedicatedGb_, 1) << L" GB\r\n"
-                 << L"Shared memory: " << FormatNumber(gpuSharedUsedGb_, 1) << L" / " << FormatNumber(gpuSharedGb_, 1) << L" GB\r\n"
-                 << L"Driver version/date: N/A | DirectX version: N/A\r\n"
-                 << L"Physical location: " << (gpuLocation_.empty() ? L"N/A" : gpuLocation_) << L"\r\n"
-                 << L"Engines: 3D / Copy / Video Decode / Video Encode";
+        {
+            if (gpuDevices_.empty())
+            {
+                text << L"No hardware GPU adapters were detected.";
+                break;
+            }
+
+            for (size_t i = 0; i < gpuDevices_.size(); ++i)
+            {
+                const auto &gpu = gpuDevices_[i];
+                if (i > 0)
+                {
+                    text << L"\r\n\r\n";
+                }
+
+                text << L"GPU " << i << L": " << gpu.name << L"\r\n"
+                     << L"Utilization: " << static_cast<int>(gpu.utilizationPercent + 0.5) << L"%\r\n"
+                     << L"3D " << static_cast<int>(gpu.engine3dPercent + 0.5)
+                     << L"% | Copy " << static_cast<int>(gpu.engineCopyPercent + 0.5)
+                     << L"% | Decode " << static_cast<int>(gpu.engineDecodePercent + 0.5)
+                     << L"% | Encode " << static_cast<int>(gpu.engineEncodePercent + 0.5) << L"%\r\n"
+                     << L"Dedicated memory: " << FormatNumber(gpu.dedicatedUsedGb, 1) << L" / " << FormatNumber(gpu.dedicatedGb, 1) << L" GB\r\n"
+                     << L"Shared memory: " << FormatNumber(gpu.sharedUsedGb, 1) << L" / " << FormatNumber(gpu.sharedGb, 1) << L" GB\r\n"
+                     << L"Location: " << gpu.location;
+            }
             break;
+        }
         }
 
         return text.str();
@@ -2861,6 +2979,7 @@ namespace utm::ui
 
             memoryPercent_ = (std::clamp)(memoryPercent_, 0.0, 100.0);
             memoryAvailableGb_ = (std::max)(0.0, memoryTotalGb_ - memoryUsedGb_);
+            memoryAxisTopGb_ = CalculateMemoryAxisTopGb(memoryTotalGb_);
         }
 
         PERFORMANCE_INFORMATION perfInfo{};
@@ -2909,89 +3028,83 @@ namespace utm::ui
             }
         }
 
-        ULONG ifTableSize = 0;
-        if (GetIfTable(nullptr, &ifTableSize, FALSE) == ERROR_INSUFFICIENT_BUFFER && ifTableSize > 0)
+        UpdateNetworkAdapterInfo();
+
+        const std::uint64_t nowMs = GetTickCount64();
+        const double elapsedSec = (networkSamplingReady_ && nowMs > previousNetworkTickMs_)
+                                      ? static_cast<double>(nowMs - previousNetworkTickMs_) / 1000.0
+                                      : 0.0;
+
+        uploadMbps_ = 0.0;
+        downloadMbps_ = 0.0;
+        wifiUploadMbps_ = 0.0;
+        wifiDownloadMbps_ = 0.0;
+        ethernetUploadMbps_ = 0.0;
+        ethernetDownloadMbps_ = 0.0;
+
+        for (auto &iface : networkInterfaces_)
         {
-            std::vector<std::uint8_t> ifBuffer(ifTableSize);
-            auto *ifTable = reinterpret_cast<MIB_IFTABLE *>(ifBuffer.data());
-            if (GetIfTable(ifTable, &ifTableSize, FALSE) == NO_ERROR)
+            MIB_IFROW row{};
+            row.dwIndex = iface.ifIndex;
+            if (GetIfEntry(&row) != NO_ERROR)
             {
-                std::uint64_t totalIn = 0;
-                std::uint64_t totalOut = 0;
-                std::uint64_t wifiIn = 0;
-                std::uint64_t wifiOut = 0;
-                std::uint64_t ethernetIn = 0;
-                std::uint64_t ethernetOut = 0;
+                iface.uploadMbps = 0.0;
+                iface.downloadMbps = 0.0;
+                PushHistory(iface.uploadHistory, iface.uploadMbps);
+                PushHistory(iface.downloadHistory, iface.downloadMbps);
+                continue;
+            }
 
-                for (DWORD i = 0; i < ifTable->dwNumEntries; ++i)
-                {
-                    const auto &row = ifTable->table[i];
-                    if (row.dwType == IF_TYPE_SOFTWARE_LOOPBACK || row.dwOperStatus != IF_OPER_STATUS_OPERATIONAL)
-                    {
-                        continue;
-                    }
+            const std::uint64_t inBytes = row.dwInOctets;
+            const std::uint64_t outBytes = row.dwOutOctets;
 
-                    totalIn += row.dwInOctets;
-                    totalOut += row.dwOutOctets;
+            if (elapsedSec > 0.0001 && iface.hasPreviousSample)
+            {
+                const std::uint64_t inDelta = inBytes >= iface.previousInBytes ? inBytes - iface.previousInBytes : 0;
+                const std::uint64_t outDelta = outBytes >= iface.previousOutBytes ? outBytes - iface.previousOutBytes : 0;
 
-                    if (row.dwType == IF_TYPE_IEEE80211)
-                    {
-                        wifiIn += row.dwInOctets;
-                        wifiOut += row.dwOutOctets;
-                    }
-                    else if (row.dwType == IF_TYPE_ETHERNET_CSMACD)
-                    {
-                        ethernetIn += row.dwInOctets;
-                        ethernetOut += row.dwOutOctets;
-                    }
-                }
+                iface.downloadMbps = (static_cast<double>(inDelta) * 8.0) / (elapsedSec * 1000.0 * 1000.0);
+                iface.uploadMbps = (static_cast<double>(outDelta) * 8.0) / (elapsedSec * 1000.0 * 1000.0);
+            }
+            else
+            {
+                iface.downloadMbps = 0.0;
+                iface.uploadMbps = 0.0;
+            }
 
-                const std::uint64_t nowMs = GetTickCount64();
-                if (networkSamplingReady_ && nowMs > previousNetworkTickMs_)
-                {
-                    const double elapsedSec = static_cast<double>(nowMs - previousNetworkTickMs_) / 1000.0;
-                    if (elapsedSec > 0.0001)
-                    {
-                        const std::uint64_t inDelta = totalIn >= previousNetworkIn_ ? totalIn - previousNetworkIn_ : 0;
-                        const std::uint64_t outDelta = totalOut >= previousNetworkOut_ ? totalOut - previousNetworkOut_ : 0;
+            iface.previousInBytes = inBytes;
+            iface.previousOutBytes = outBytes;
+            iface.hasPreviousSample = true;
 
-                        downloadMbps_ = (static_cast<double>(inDelta) * 8.0) / (elapsedSec * 1000.0 * 1000.0);
-                        uploadMbps_ = (static_cast<double>(outDelta) * 8.0) / (elapsedSec * 1000.0 * 1000.0);
+            PushHistory(iface.uploadHistory, iface.uploadMbps);
+            PushHistory(iface.downloadHistory, iface.downloadMbps);
 
-                        const std::uint64_t wifiInDelta = wifiIn >= previousWifiIn_ ? wifiIn - previousWifiIn_ : 0;
-                        const std::uint64_t wifiOutDelta = wifiOut >= previousWifiOut_ ? wifiOut - previousWifiOut_ : 0;
-                        wifiDownloadMbps_ = (static_cast<double>(wifiInDelta) * 8.0) / (elapsedSec * 1000.0 * 1000.0);
-                        wifiUploadMbps_ = (static_cast<double>(wifiOutDelta) * 8.0) / (elapsedSec * 1000.0 * 1000.0);
+            uploadMbps_ += iface.uploadMbps;
+            downloadMbps_ += iface.downloadMbps;
 
-                        const std::uint64_t ethernetInDelta = ethernetIn >= previousEthernetIn_ ? ethernetIn - previousEthernetIn_ : 0;
-                        const std::uint64_t ethernetOutDelta = ethernetOut >= previousEthernetOut_ ? ethernetOut - previousEthernetOut_ : 0;
-                        ethernetDownloadMbps_ = (static_cast<double>(ethernetInDelta) * 8.0) / (elapsedSec * 1000.0 * 1000.0);
-                        ethernetUploadMbps_ = (static_cast<double>(ethernetOutDelta) * 8.0) / (elapsedSec * 1000.0 * 1000.0);
-                    }
-                }
-
-                previousNetworkIn_ = totalIn;
-                previousNetworkOut_ = totalOut;
-                previousWifiIn_ = wifiIn;
-                previousWifiOut_ = wifiOut;
-                previousEthernetIn_ = ethernetIn;
-                previousEthernetOut_ = ethernetOut;
-                previousNetworkTickMs_ = nowMs;
-                networkSamplingReady_ = true;
+            if (iface.ifType == IF_TYPE_IEEE80211)
+            {
+                wifiUploadMbps_ += iface.uploadMbps;
+                wifiDownloadMbps_ += iface.downloadMbps;
+            }
+            else if (iface.ifType == IF_TYPE_ETHERNET_CSMACD)
+            {
+                ethernetUploadMbps_ += iface.uploadMbps;
+                ethernetDownloadMbps_ += iface.downloadMbps;
             }
         }
 
-        UpdateNetworkAdapterInfo();
+        previousNetworkTickMs_ = nowMs;
+        networkSamplingReady_ = true;
 
-        gpuPercent_ = QueryGpuUsagePercent();
+        std::unordered_map<std::uint64_t, GpuPerf> previousGpuByKey;
+        previousGpuByKey.reserve(gpuDevices_.size());
+        for (auto &gpu : gpuDevices_)
+        {
+            previousGpuByKey.emplace(MakeLuidKey(gpu.luid), std::move(gpu));
+        }
 
-        gpuAdapterName_.clear();
-        gpuAdaptersSummary_.clear();
-        gpuLocation_.clear();
-        gpuDedicatedGb_ = 0.0;
-        gpuSharedGb_ = 0.0;
-        gpuDedicatedUsedGb_ = 0.0;
-        gpuSharedUsedGb_ = 0.0;
+        std::vector<GpuPerf> nextGpuDevices;
 
         IDXGIFactory1 *factory = nullptr;
         if (SUCCEEDED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), reinterpret_cast<void **>(&factory))))
@@ -3003,28 +3116,31 @@ namespace utm::ui
                 DXGI_ADAPTER_DESC1 desc{};
                 if (SUCCEEDED(adapter->GetDesc1(&desc)) && (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) == 0)
                 {
-                    const std::wstring name = desc.Description;
-                    if (!gpuAdaptersSummary_.empty())
-                    {
-                        gpuAdaptersSummary_ += L" | ";
-                    }
-                    gpuAdaptersSummary_ += name;
+                    const std::uint64_t key = MakeLuidKey(desc.AdapterLuid);
 
-                    if (gpuAdapterName_.empty())
+                    GpuPerf gpu{};
+                    if (const auto it = previousGpuByKey.find(key); it != previousGpuByKey.end())
                     {
-                        gpuAdapterName_ = name;
+                        gpu = std::move(it->second);
                     }
 
-                    gpuDedicatedGb_ += static_cast<double>(desc.DedicatedVideoMemory) / kBytesPerGiB;
-                    gpuSharedGb_ += static_cast<double>(desc.SharedSystemMemory) / kBytesPerGiB;
+                    gpu.luid = desc.AdapterLuid;
+                    gpu.name = desc.Description[0] != L'\0' ? desc.Description : (L"GPU " + std::to_wstring(index));
 
                     std::wstringstream location;
-                    location << L"Adapter " << index << L" LUID " << desc.AdapterLuid.HighPart << L":" << desc.AdapterLuid.LowPart;
-                    if (!gpuLocation_.empty())
-                    {
-                        gpuLocation_ += L" | ";
-                    }
-                    gpuLocation_ += location.str();
+                    location << L"GPU " << index << L" LUID " << desc.AdapterLuid.HighPart << L":" << desc.AdapterLuid.LowPart;
+                    gpu.location = location.str();
+
+                    gpu.dedicatedGb = static_cast<double>(desc.DedicatedVideoMemory) / kBytesPerGiB;
+                    gpu.sharedGb = static_cast<double>(desc.SharedSystemMemory) / kBytesPerGiB;
+                    gpu.dedicatedUsedGb = 0.0;
+                    gpu.sharedUsedGb = 0.0;
+
+                    gpu.utilizationPercent = 0.0;
+                    gpu.engine3dPercent = 0.0;
+                    gpu.engineCopyPercent = 0.0;
+                    gpu.engineDecodePercent = 0.0;
+                    gpu.engineEncodePercent = 0.0;
 
                     IDXGIAdapter3 *adapter3 = nullptr;
                     if (SUCCEEDED(adapter->QueryInterface(__uuidof(IDXGIAdapter3), reinterpret_cast<void **>(&adapter3))))
@@ -3032,17 +3148,19 @@ namespace utm::ui
                         DXGI_QUERY_VIDEO_MEMORY_INFO localInfo{};
                         if (SUCCEEDED(adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &localInfo)))
                         {
-                            gpuDedicatedUsedGb_ += static_cast<double>(localInfo.CurrentUsage) / kBytesPerGiB;
+                            gpu.dedicatedUsedGb = static_cast<double>(localInfo.CurrentUsage) / kBytesPerGiB;
                         }
 
                         DXGI_QUERY_VIDEO_MEMORY_INFO nonLocalInfo{};
                         if (SUCCEEDED(adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL, &nonLocalInfo)))
                         {
-                            gpuSharedUsedGb_ += static_cast<double>(nonLocalInfo.CurrentUsage) / kBytesPerGiB;
+                            gpu.sharedUsedGb = static_cast<double>(nonLocalInfo.CurrentUsage) / kBytesPerGiB;
                         }
 
                         adapter3->Release();
                     }
+
+                    nextGpuDevices.push_back(std::move(gpu));
                 }
 
                 adapter->Release();
@@ -3053,10 +3171,147 @@ namespace utm::ui
             factory->Release();
         }
 
-        if (gpuAdaptersSummary_.empty() && !gpuAdapterName_.empty())
+        std::unordered_map<std::uint64_t, size_t> gpuIndexByLuid;
+        gpuIndexByLuid.reserve(nextGpuDevices.size());
+        for (size_t i = 0; i < nextGpuDevices.size(); ++i)
         {
-            gpuAdaptersSummary_ = gpuAdapterName_;
+            gpuIndexByLuid.emplace(MakeLuidKey(nextGpuDevices[i].luid), i);
         }
+
+        std::vector<double> gpuTotalEngineUsage(nextGpuDevices.size(), 0.0);
+
+        if (gpuCounterReady_ && gpuQuery_ && gpuCounter_ && !nextGpuDevices.empty())
+        {
+            if (PdhCollectQueryData(gpuQuery_) == ERROR_SUCCESS)
+            {
+                DWORD bufferSize = 0;
+                DWORD itemCount = 0;
+                PDH_STATUS status = PdhGetFormattedCounterArrayW(gpuCounter_, PDH_FMT_DOUBLE, &bufferSize, &itemCount, nullptr);
+                if ((status == ERROR_SUCCESS || status == PDH_MORE_DATA) && bufferSize > 0 && itemCount > 0)
+                {
+                    std::vector<std::uint8_t> buffer(bufferSize);
+                    auto *items = reinterpret_cast<PPDH_FMT_COUNTERVALUE_ITEM_W>(buffer.data());
+                    status = PdhGetFormattedCounterArrayW(gpuCounter_, PDH_FMT_DOUBLE, &bufferSize, &itemCount, items);
+                    if (status == ERROR_SUCCESS)
+                    {
+                        for (DWORD i = 0; i < itemCount; ++i)
+                        {
+                            if (items[i].FmtValue.CStatus != ERROR_SUCCESS)
+                            {
+                                continue;
+                            }
+
+                            const double value = (std::max)(0.0, items[i].FmtValue.doubleValue);
+                            if (value <= 0.0)
+                            {
+                                continue;
+                            }
+
+                            LUID luid{};
+                            if (!TryExtractLuidFromGpuInstanceName(items[i].szName ? items[i].szName : L"", luid))
+                            {
+                                continue;
+                            }
+
+                            const auto gpuIt = gpuIndexByLuid.find(MakeLuidKey(luid));
+                            if (gpuIt == gpuIndexByLuid.end())
+                            {
+                                continue;
+                            }
+
+                            GpuPerf &gpu = nextGpuDevices[gpuIt->second];
+                            gpuTotalEngineUsage[gpuIt->second] += value;
+
+                            const std::wstring name = items[i].szName ? ToLower(items[i].szName) : L"";
+                            if (name.find(L"engtype_3d") != std::wstring::npos)
+                            {
+                                gpu.engine3dPercent += value;
+                            }
+                            else if (name.find(L"engtype_copy") != std::wstring::npos)
+                            {
+                                gpu.engineCopyPercent += value;
+                            }
+                            else if (name.find(L"engtype_videodecode") != std::wstring::npos ||
+                                     name.find(L"engtype_video decode") != std::wstring::npos)
+                            {
+                                gpu.engineDecodePercent += value;
+                            }
+                            else if (name.find(L"engtype_videoencode") != std::wstring::npos ||
+                                     name.find(L"engtype_video encode") != std::wstring::npos)
+                            {
+                                gpu.engineEncodePercent += value;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        for (size_t i = 0; i < nextGpuDevices.size(); ++i)
+        {
+            GpuPerf &gpu = nextGpuDevices[i];
+            gpu.engine3dPercent = (std::clamp)(gpu.engine3dPercent, 0.0, 100.0);
+            gpu.engineCopyPercent = (std::clamp)(gpu.engineCopyPercent, 0.0, 100.0);
+            gpu.engineDecodePercent = (std::clamp)(gpu.engineDecodePercent, 0.0, 100.0);
+            gpu.engineEncodePercent = (std::clamp)(gpu.engineEncodePercent, 0.0, 100.0);
+
+            const double enginePeak = (std::max)((std::max)(gpu.engine3dPercent, gpu.engineCopyPercent),
+                                                 (std::max)(gpu.engineDecodePercent, gpu.engineEncodePercent));
+            const double fallback = (std::clamp)(gpuTotalEngineUsage[i], 0.0, 100.0);
+            gpu.utilizationPercent = enginePeak > 0.0 ? enginePeak : fallback;
+
+            PushHistory(gpu.utilizationHistory, gpu.utilizationPercent);
+            PushHistory(gpu.dedicatedHistory, gpu.dedicatedUsedGb);
+            PushHistory(gpu.sharedHistory, gpu.sharedUsedGb);
+        }
+
+        gpuDevices_ = std::move(nextGpuDevices);
+
+        gpuAdapterName_ = L"N/A";
+        gpuAdaptersSummary_.clear();
+        gpuLocation_.clear();
+        gpuDedicatedGb_ = 0.0;
+        gpuSharedGb_ = 0.0;
+        gpuDedicatedUsedGb_ = 0.0;
+        gpuSharedUsedGb_ = 0.0;
+        gpu3dPercent_ = 0.0;
+        gpuCopyPercent_ = 0.0;
+        gpuDecodePercent_ = 0.0;
+        gpuEncodePercent_ = 0.0;
+
+        for (size_t i = 0; i < gpuDevices_.size(); ++i)
+        {
+            const auto &gpu = gpuDevices_[i];
+
+            if (gpuAdapterName_ == L"N/A")
+            {
+                gpuAdapterName_ = gpu.name;
+            }
+
+            if (!gpuAdaptersSummary_.empty())
+            {
+                gpuAdaptersSummary_ += L" | ";
+            }
+            gpuAdaptersSummary_ += gpu.name;
+
+            if (!gpuLocation_.empty())
+            {
+                gpuLocation_ += L" | ";
+            }
+            gpuLocation_ += gpu.location;
+
+            gpuDedicatedGb_ += gpu.dedicatedGb;
+            gpuSharedGb_ += gpu.sharedGb;
+            gpuDedicatedUsedGb_ += gpu.dedicatedUsedGb;
+            gpuSharedUsedGb_ += gpu.sharedUsedGb;
+
+            gpu3dPercent_ = (std::max)(gpu3dPercent_, gpu.engine3dPercent);
+            gpuCopyPercent_ = (std::max)(gpuCopyPercent_, gpu.engineCopyPercent);
+            gpuDecodePercent_ = (std::max)(gpuDecodePercent_, gpu.engineDecodePercent);
+            gpuEncodePercent_ = (std::max)(gpuEncodePercent_, gpu.engineEncodePercent);
+        }
+
+        gpuPercent_ = QueryGpuUsagePercent();
 
         PushHistory(cpuHistory_, totalCpuPercent_);
         PushHistory(memoryHistory_, memoryUsedGb_);
@@ -3096,6 +3351,12 @@ namespace utm::ui
         UpdateDynamicScale(diskReadScaleMBps_, diskReadHistory_, 1.0, 1.25);
         UpdateDynamicScale(diskWriteScaleMBps_, diskWriteHistory_, 1.0, 1.25);
 
+        for (auto &iface : networkInterfaces_)
+        {
+            UpdateDynamicScale(iface.uploadScaleMbps, iface.uploadHistory, 0.5, 1.25);
+            UpdateDynamicScale(iface.downloadScaleMbps, iface.downloadHistory, 0.5, 1.25);
+        }
+
         std::wstring title;
         switch (activePerformanceView_)
         {
@@ -3112,13 +3373,21 @@ namespace utm::ui
             title = L"Disk | Read/Write throughput and latency";
             break;
         case PerformanceView::Wifi:
-            title = L"Wi-Fi | Upload and download throughput";
+        {
+            const size_t wifiCount = std::count_if(networkInterfaces_.begin(), networkInterfaces_.end(), [](const NetworkInterfacePerf &iface)
+                                                   { return iface.ifType == IF_TYPE_IEEE80211; });
+            title = L"Wi-Fi | " + std::to_wstring(wifiCount) + L" adapter(s)";
             break;
+        }
         case PerformanceView::Ethernet:
-            title = L"Ethernet | Upload and download throughput";
+        {
+            const size_t ethernetCount = std::count_if(networkInterfaces_.begin(), networkInterfaces_.end(), [](const NetworkInterfacePerf &iface)
+                                                       { return iface.ifType == IF_TYPE_ETHERNET_CSMACD; });
+            title = L"Ethernet | " + std::to_wstring(ethernetCount) + L" adapter(s)";
             break;
+        }
         case PerformanceView::Gpu:
-            title = L"GPU | 3D / Copy / Decode / Encode / Dedicated / Shared";
+            title = L"GPU | " + std::to_wstring(gpuDevices_.size()) + L" adapter(s)";
             break;
         }
         SetWindowTextW(performancePlaceholder_, title.c_str());
@@ -3156,6 +3425,7 @@ namespace utm::ui
             double maxValue = 100.0;
             bool showPercent = false;
             bool showCoreOverlay = false;
+            bool wholeNumberTicks = false;
         };
 
         GraphConfig cfg{};
@@ -3201,7 +3471,8 @@ namespace utm::ui
                 cfg.unit = L"GB";
                 cfg.lineColor = RGB(16, 166, 115);
                 cfg.latest = memoryUsedGb_;
-                cfg.maxValue = (std::max)(1.0, memoryTotalGb_);
+                cfg.maxValue = (std::max)(1.0, memoryAxisTopGb_);
+                cfg.wholeNumberTicks = true;
             }
             break;
         case kIdPerfGraphGpu:
@@ -3212,7 +3483,8 @@ namespace utm::ui
                 cfg.unit = L"GB";
                 cfg.lineColor = RGB(44, 132, 220);
                 cfg.latest = memoryAvailableGb_;
-                cfg.maxValue = (std::max)(1.0, memoryTotalGb_);
+                cfg.maxValue = (std::max)(1.0, memoryAxisTopGb_);
+                cfg.wholeNumberTicks = true;
             }
             else if (activePerformanceView_ == PerformanceView::Gpu)
             {
@@ -3355,7 +3627,7 @@ namespace utm::ui
         RECT local{0, 0, width, height};
         FillRect(dc, &local, cardBrush_);
 
-        HPEN borderPen = CreatePen(PS_SOLID, 1, RGB(204, 214, 229));
+        HPEN borderPen = CreatePen(PS_SOLID, 1, RGB(216, 225, 239));
         HPEN oldPen = reinterpret_cast<HPEN>(SelectObject(dc, borderPen));
         HBRUSH oldBrush = reinterpret_cast<HBRUSH>(SelectObject(dc, GetStockObject(NULL_BRUSH)));
         Rectangle(dc, local.left, local.top, local.right, local.bottom);
@@ -3403,11 +3675,11 @@ namespace utm::ui
         const int plotWidth = (std::max)(1, static_cast<int>(plot.right - plot.left));
         const int plotHeight = (std::max)(1, static_cast<int>(plot.bottom - plot.top));
 
-        HBRUSH plotBrush = CreateSolidBrush(BlendColor(RGB(255, 255, 255), cfg.lineColor, 0.9));
+        HBRUSH plotBrush = CreateSolidBrush(RGB(248, 251, 255));
         FillRect(dc, &plot, plotBrush);
         DeleteObject(plotBrush);
 
-        HPEN gridPen = CreatePen(PS_SOLID, 1, RGB(221, 229, 240));
+        HPEN gridPen = CreatePen(PS_SOLID, 1, RGB(227, 233, 244));
         oldPen = reinterpret_cast<HPEN>(SelectObject(dc, gridPen));
 
         for (int i = 0; i <= 4; ++i)
@@ -3422,6 +3694,12 @@ namespace utm::ui
             {
                 yLabel = std::to_wstring(static_cast<int>(tickValue + 0.5));
                 yLabel += L"%";
+            }
+            else if (cfg.wholeNumberTicks)
+            {
+                yLabel = std::to_wstring(static_cast<int>(tickValue + 0.5));
+                yLabel += L" ";
+                yLabel += cfg.unit;
             }
             else
             {
@@ -3678,65 +3956,36 @@ namespace utm::ui
             }
         };
 
-        if (activePerformanceView_ == PerformanceView::Gpu)
+        struct CardItem
         {
-            RECT card = local;
-            card.left += 8;
-            card.right -= 8;
-            card.top += 8;
-            card.bottom -= 8;
+            std::wstring title;
+            const std::deque<double> *history = nullptr;
+            double latest = 0.0;
+            double maxValue = 100.0;
+            COLORREF color = RGB(30, 120, 230);
+            const wchar_t *unit = L"%";
+            bool percent = false;
+        };
 
-            drawCardChart(
-                card,
-                L"GPU Shared Memory",
-                gpuSharedHistory_,
-                gpuSharedUsedGb_,
-                (std::max)(0.5, gpuSharedGb_),
-                RGB(52, 144, 236),
-                L"GB",
-                false);
-
-            BitBlt(targetDc, rc.left, rc.top, width, height, dc, 0, 0, SRCCOPY);
-            SelectObject(dc, oldBitmap);
-            DeleteObject(bitmap);
-            DeleteDC(dc);
-            return;
-        }
-
-        if (activePerformanceView_ == PerformanceView::All)
+        auto renderCardCollection = [&](const std::wstring &heading, const std::vector<CardItem> &cards)
         {
             RECT titleRect = local;
             titleRect.left += 10;
             titleRect.top += 5;
-            DrawTextW(dc, L"All Graphs (scroll with mouse wheel)", -1, &titleRect, DT_LEFT | DT_TOP | DT_SINGLELINE);
+            DrawTextW(dc, heading.c_str(), -1, &titleRect, DT_LEFT | DT_TOP | DT_SINGLELINE);
 
-            struct CardItem
+            if (cards.empty())
             {
-                std::wstring title;
-                const std::deque<double> *history;
-                double latest;
-                double maxValue;
-                COLORREF color;
-                const wchar_t *unit;
-                bool percent;
-            };
+                const_cast<MainWindow *>(this)->perfAllScrollOffset_ = 0;
+                const_cast<MainWindow *>(this)->perfAllContentHeight_ = 0;
 
-            std::vector<CardItem> cards = {
-                {L"CPU Total", &cpuHistory_, totalCpuPercent_, 100.0, RGB(30, 120, 230), L"%", true},
-                {L"Memory In Use", &memoryHistory_, memoryUsedGb_, (std::max)(1.0, memoryTotalGb_), RGB(16, 166, 115), L"GB", false},
-                {L"Memory Available", &memoryAvailableHistory_, memoryAvailableGb_, (std::max)(1.0, memoryTotalGb_), RGB(44, 132, 220), L"GB", false},
-                {L"Disk Read", &diskReadHistory_, diskReadMBps_, (std::max)(1.0, diskReadScaleMBps_), RGB(27, 145, 102), L"MB/s", false},
-                {L"Disk Write", &diskWriteHistory_, diskWriteMBps_, (std::max)(1.0, diskWriteScaleMBps_), RGB(208, 73, 86), L"MB/s", false},
-                {L"Wi-Fi Upload", &wifiUploadHistory_, wifiUploadMbps_, (std::max)(0.5, wifiUploadScaleMbps_), RGB(236, 150, 14), L"Mbps", false},
-                {L"Wi-Fi Download", &wifiDownloadHistory_, wifiDownloadMbps_, (std::max)(0.5, wifiDownloadScaleMbps_), RGB(225, 76, 88), L"Mbps", false},
-                {L"Ethernet Upload", &ethernetUploadHistory_, ethernetUploadMbps_, (std::max)(0.5, ethernetUploadScaleMbps_), RGB(236, 150, 14), L"Mbps", false},
-                {L"Ethernet Download", &ethernetDownloadHistory_, ethernetDownloadMbps_, (std::max)(0.5, ethernetDownloadScaleMbps_), RGB(225, 76, 88), L"Mbps", false},
-                {L"GPU 3D", &gpu3dHistory_, gpu3dPercent_, 100.0, RGB(96, 118, 255), L"%", true},
-                {L"GPU Copy", &gpuCopyHistory_, gpuCopyPercent_, 100.0, RGB(53, 189, 126), L"%", true},
-                {L"GPU Decode", &gpuDecodeHistory_, gpuDecodePercent_, 100.0, RGB(236, 150, 14), L"%", true},
-                {L"GPU Encode", &gpuEncodeHistory_, gpuEncodePercent_, 100.0, RGB(225, 76, 88), L"%", true},
-                {L"GPU Dedicated", &gpuDedicatedHistory_, gpuDedicatedUsedGb_, (std::max)(0.5, gpuDedicatedGb_), RGB(166, 81, 223), L"GB", false},
-                {L"GPU Shared", &gpuSharedHistory_, gpuSharedUsedGb_, (std::max)(0.5, gpuSharedGb_), RGB(52, 144, 236), L"GB", false}};
+                RECT emptyRect = local;
+                emptyRect.left += 10;
+                emptyRect.top += 30;
+                SetTextColor(dc, RGB(104, 118, 141));
+                DrawTextW(dc, L"No live graphs available for this section.", -1, &emptyRect, DT_LEFT | DT_TOP | DT_SINGLELINE);
+                return;
+            }
 
             const int topMargin = 30;
             const int bottomMargin = 8;
@@ -3769,6 +4018,11 @@ namespace utm::ui
                     continue;
                 }
 
+                if (!cards[i].history)
+                {
+                    continue;
+                }
+
                 drawCardChart(card, cards[i].title, *cards[i].history, cards[i].latest, cards[i].maxValue, cards[i].color, cards[i].unit, cards[i].percent);
             }
 
@@ -3788,6 +4042,88 @@ namespace utm::ui
                 FillRect(dc, &thumb, thumbBrush);
                 DeleteObject(thumbBrush);
             }
+        };
+
+        if (activePerformanceView_ == PerformanceView::All ||
+            activePerformanceView_ == PerformanceView::Wifi ||
+            activePerformanceView_ == PerformanceView::Ethernet ||
+            activePerformanceView_ == PerformanceView::Gpu)
+        {
+            constexpr COLORREF kNetworkUpColor = RGB(236, 150, 14);
+            constexpr COLORREF kNetworkDownColor = RGB(225, 76, 88);
+            constexpr COLORREF kGpuPalette[] = {
+                RGB(96, 118, 255),
+                RGB(53, 189, 126),
+                RGB(236, 150, 14),
+                RGB(225, 76, 88),
+                RGB(52, 144, 236),
+                RGB(166, 81, 223)};
+
+            std::vector<CardItem> cards;
+            std::wstring heading;
+
+            if (activePerformanceView_ == PerformanceView::All)
+            {
+                heading = L"All Graphs (scroll with mouse wheel)";
+
+                cards.push_back({L"CPU Total", &cpuHistory_, totalCpuPercent_, 100.0, RGB(30, 120, 230), L"%", true});
+                cards.push_back({L"Memory In Use", &memoryHistory_, memoryUsedGb_, (std::max)(1.0, memoryAxisTopGb_), RGB(16, 166, 115), L"GB", false});
+                cards.push_back({L"Memory Available", &memoryAvailableHistory_, memoryAvailableGb_, (std::max)(1.0, memoryAxisTopGb_), RGB(44, 132, 220), L"GB", false});
+                cards.push_back({L"Disk Read", &diskReadHistory_, diskReadMBps_, (std::max)(1.0, diskReadScaleMBps_), RGB(27, 145, 102), L"MB/s", false});
+                cards.push_back({L"Disk Write", &diskWriteHistory_, diskWriteMBps_, (std::max)(1.0, diskWriteScaleMBps_), RGB(208, 73, 86), L"MB/s", false});
+
+                for (size_t i = 0; i < networkInterfaces_.size(); ++i)
+                {
+                    const auto &iface = networkInterfaces_[i];
+                    std::wstring base = iface.adapterName.empty() ? (L"Interface " + std::to_wstring(i)) : iface.adapterName;
+                    cards.push_back({base + L" Upload", &iface.uploadHistory, iface.uploadMbps, (std::max)(0.5, iface.uploadScaleMbps), kNetworkUpColor, L"Mbps", false});
+                    cards.push_back({base + L" Download", &iface.downloadHistory, iface.downloadMbps, (std::max)(0.5, iface.downloadScaleMbps), kNetworkDownColor, L"Mbps", false});
+                }
+
+                for (size_t i = 0; i < gpuDevices_.size(); ++i)
+                {
+                    const auto &gpu = gpuDevices_[i];
+                    const COLORREF color = kGpuPalette[i % (sizeof(kGpuPalette) / sizeof(kGpuPalette[0]))];
+                    cards.push_back({L"GPU " + std::to_wstring(i) + L" Util", &gpu.utilizationHistory, gpu.utilizationPercent, 100.0, color, L"%", true});
+                }
+            }
+            else if (activePerformanceView_ == PerformanceView::Wifi || activePerformanceView_ == PerformanceView::Ethernet)
+            {
+                const ULONG targetType = activePerformanceView_ == PerformanceView::Wifi ? IF_TYPE_IEEE80211 : IF_TYPE_ETHERNET_CSMACD;
+                heading = activePerformanceView_ == PerformanceView::Wifi
+                              ? L"Wi-Fi Interfaces (scroll for all adapters)"
+                              : L"Ethernet Interfaces (scroll for all adapters)";
+
+                size_t displayIndex = 0;
+                for (const auto &iface : networkInterfaces_)
+                {
+                    if (iface.ifType != targetType)
+                    {
+                        continue;
+                    }
+
+                    const std::wstring prefix = (activePerformanceView_ == PerformanceView::Wifi ? L"Wi-Fi " : L"Ethernet ") + std::to_wstring(displayIndex);
+                    cards.push_back({prefix + L" Upload", &iface.uploadHistory, iface.uploadMbps, (std::max)(0.5, iface.uploadScaleMbps), kNetworkUpColor, L"Mbps", false});
+                    cards.push_back({prefix + L" Download", &iface.downloadHistory, iface.downloadMbps, (std::max)(0.5, iface.downloadScaleMbps), kNetworkDownColor, L"Mbps", false});
+                    ++displayIndex;
+                }
+            }
+            else
+            {
+                heading = L"GPU Adapters (scroll for all GPUs)";
+                for (size_t i = 0; i < gpuDevices_.size(); ++i)
+                {
+                    const auto &gpu = gpuDevices_[i];
+                    const COLORREF utilColor = kGpuPalette[i % (sizeof(kGpuPalette) / sizeof(kGpuPalette[0]))];
+                    const COLORREF memoryColor = kGpuPalette[(i + 1) % (sizeof(kGpuPalette) / sizeof(kGpuPalette[0]))];
+
+                    cards.push_back({L"GPU " + std::to_wstring(i) + L" Util", &gpu.utilizationHistory, gpu.utilizationPercent, 100.0, utilColor, L"%", true});
+                    cards.push_back({L"GPU " + std::to_wstring(i) + L" Dedicated", &gpu.dedicatedHistory, gpu.dedicatedUsedGb, (std::max)(0.5, gpu.dedicatedGb), memoryColor, L"GB", false});
+                    cards.push_back({L"GPU " + std::to_wstring(i) + L" Shared", &gpu.sharedHistory, gpu.sharedUsedGb, (std::max)(0.5, gpu.sharedGb), RGB(52, 144, 236), L"GB", false});
+                }
+            }
+
+            renderCardCollection(heading, cards);
 
             BitBlt(targetDc, rc.left, rc.top, width, height, dc, 0, 0, SRCCOPY);
             SelectObject(dc, oldBitmap);
