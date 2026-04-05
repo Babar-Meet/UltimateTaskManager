@@ -87,6 +87,8 @@ namespace
     constexpr int kIdPerfDetails = 1047;
     constexpr int kIdPerfNavDynamicBase = 1100;
     constexpr int kIdPerfNavDynamicMax = 1199;
+    constexpr int kIdPerfCpuModeSingle = 1048;
+    constexpr int kIdPerfCpuModePerCore = 1049;
 
     constexpr int kIdQuickToolPortKillAll = 41000;
     constexpr int kIdQuickToolProcessKillAll = 41001;
@@ -1002,6 +1004,18 @@ namespace utm::ui
                 return 0;
             }
 
+            if (id == kIdPerfCpuModeSingle)
+            {
+                SetCpuGraphMode(CpuGraphMode::Single);
+                return 0;
+            }
+
+            if (id == kIdPerfCpuModePerCore)
+            {
+                SetCpuGraphMode(CpuGraphMode::PerCore);
+                return 0;
+            }
+
             if (id == kIdPerfNavAll)
             {
                 SetActivePerformanceView(PerformanceView::All);
@@ -1410,7 +1424,9 @@ namespace utm::ui
                 control == perfNavDisk_ ||
                 control == perfNavWifi_ ||
                 control == perfNavEthernet_ ||
-                control == perfNavGpu_)
+                control == perfNavGpu_ ||
+                control == perfCpuModeSingle_ ||
+                control == perfCpuModePerCore_)
             {
                 SetBkColor(dc, kCardColor);
                 SetTextColor(dc, RGB(32, 48, 76));
@@ -1443,12 +1459,15 @@ namespace utm::ui
 
         case WM_MOUSEWHEEL:
         {
-            const bool scrollableCardsView =
-                activeSection_ == Section::Performance &&
-                (activePerformanceView_ == PerformanceView::All ||
-                 activePerformanceView_ == PerformanceView::Gpu);
+            const bool perfSection = activeSection_ == Section::Performance;
+            const bool scrollAllOrGpu =
+                activePerformanceView_ == PerformanceView::All ||
+                activePerformanceView_ == PerformanceView::Gpu;
+            const bool scrollCpuPerCore =
+                activePerformanceView_ == PerformanceView::Cpu &&
+                cpuGraphMode_ == CpuGraphMode::PerCore;
 
-            if (scrollableCardsView && perfCoreGrid_)
+            if (perfSection && perfCoreGrid_ && (scrollAllOrGpu || scrollCpuPerCore))
             {
                 RECT area{};
                 GetWindowRect(perfCoreGrid_, &area);
@@ -1462,9 +1481,11 @@ namespace utm::ui
                         RECT client{};
                         GetClientRect(perfCoreGrid_, &client);
                         const int viewport = (std::max)(1, static_cast<int>(client.bottom - client.top));
-                        const int maxOffset = (std::max)(0, perfAllContentHeight_ - viewport);
-                        const int nextOffset = perfAllScrollOffset_ - wheelSteps * 40;
-                        perfAllScrollOffset_ = (std::clamp)(nextOffset, 0, maxOffset);
+                        int *scrollOffset = scrollCpuPerCore ? &perfCpuCoreScrollOffset_ : &perfAllScrollOffset_;
+                        const int contentHeight = scrollCpuPerCore ? perfCpuCoreContentHeight_ : perfAllContentHeight_;
+                        const int maxOffset = (std::max)(0, contentHeight - viewport);
+                        const int nextOffset = *scrollOffset - wheelSteps * 40;
+                        *scrollOffset = (std::clamp)(nextOffset, 0, maxOffset);
                         InvalidateRect(perfCoreGrid_, nullptr, FALSE);
                     }
                     return 0;
@@ -1730,6 +1751,8 @@ namespace utm::ui
         perfNavWifi_ = createPerfNavButton(kIdPerfNavWifi, L"Wi-Fi", 0);
         perfNavEthernet_ = createPerfNavButton(kIdPerfNavEthernet, L"Ethernet", 0);
         perfNavGpu_ = createPerfNavButton(kIdPerfNavGpu, L"GPU", 0);
+        perfCpuModeSingle_ = createPerfNavButton(kIdPerfCpuModeSingle, L"Single Graph", WS_GROUP);
+        perfCpuModePerCore_ = createPerfNavButton(kIdPerfCpuModePerCore, L"Per-Core Graphs", 0);
 
         perfDetails_ = CreateWindowExW(
             WS_EX_CLIENTEDGE,
@@ -2079,6 +2102,7 @@ namespace utm::ui
         if (!sidebarTitle_ || !navProcesses_ || !navPerformance_ || !navNetwork_ || !navHardware_ || !navServices_ || !navStartupApps_ || !navUsers_ || !navQuickTools_ ||
             !sectionTitle_ || !filterLabel_ || !filterEdit_ || !processList_ ||
             !performancePlaceholder_ || !perfNavPanel_ || !perfNavAll_ || !perfNavCpu_ || !perfNavMemory_ || !perfNavDisk_ || !perfNavWifi_ || !perfNavEthernet_ || !perfNavGpu_ ||
+            !perfCpuModeSingle_ || !perfCpuModePerCore_ ||
             !perfGraphCpu_ || !perfGraphMemory_ || !perfGraphGpu_ || !perfGraphUpload_ || !perfGraphDownload_ || !perfCoreGrid_ || !perfDetails_ ||
             !networkPlaceholder_ || !hardwarePlaceholder_ || !servicesPlaceholder_ || !startupAppsPlaceholder_ || !usersPlaceholder_ ||
             !quickToolsTitle_ || !quickToolsHint_ ||
@@ -2115,6 +2139,8 @@ namespace utm::ui
         applyFont(perfNavWifi_, uiBoldFont_);
         applyFont(perfNavEthernet_, uiBoldFont_);
         applyFont(perfNavGpu_, uiBoldFont_);
+        applyFont(perfCpuModeSingle_, uiBoldFont_);
+        applyFont(perfCpuModePerCore_, uiBoldFont_);
         applyFont(perfCoreGrid_, uiFont_);
         applyFont(perfDetails_, uiFont_);
         applyFont(networkPlaceholder_, uiFont_);
@@ -2206,8 +2232,12 @@ namespace utm::ui
         const int perfMainX = contentX + perfSidebarWidth + 10;
         const int perfMainWidth = (std::max)(140, contentWidth - perfSidebarWidth - 10);
         const int perfHeaderHeight = 22;
+        const bool cpuModeControlsVisible = activePerformanceView_ == PerformanceView::Cpu;
+        const int cpuModeHeight = cpuModeControlsVisible ? 28 : 0;
+        const int cpuModeGap = cpuModeControlsVisible ? 8 : 0;
+        const int cpuModeTop = bodyTop + perfHeaderHeight + 4;
         const int perfDetailsHeight = (std::max)(120, (std::min)(190, bodyHeight / 3));
-        const int perfGraphTop = bodyTop + perfHeaderHeight + 6;
+        const int perfGraphTop = bodyTop + perfHeaderHeight + 6 + cpuModeHeight + cpuModeGap;
         const int perfGraphHeight = (std::max)(120, statusY - perfGraphTop - perfDetailsHeight - kPadding);
         const int perfDetailsTop = perfGraphTop + perfGraphHeight + kPadding;
 
@@ -2250,6 +2280,13 @@ namespace utm::ui
         }
 
         MoveWindow(performancePlaceholder_, perfMainX, bodyTop, perfMainWidth, perfHeaderHeight, TRUE);
+        if (cpuModeControlsVisible)
+        {
+            const int modeGap = 8;
+            const int modeSingleWidth = (perfMainWidth - modeGap) / 2;
+            MoveWindow(perfCpuModeSingle_, perfMainX, cpuModeTop, modeSingleWidth, cpuModeHeight, TRUE);
+            MoveWindow(perfCpuModePerCore_, perfMainX + modeSingleWidth + modeGap, cpuModeTop, perfMainWidth - modeSingleWidth - modeGap, cpuModeHeight, TRUE);
+        }
         MoveWindow(perfDetails_, perfMainX, perfDetailsTop, perfMainWidth, perfDetailsHeight, TRUE);
 
         MoveWindow(perfGraphCpu_, perfMainX, perfGraphTop, perfMainWidth, perfGraphHeight, TRUE);
@@ -2261,10 +2298,14 @@ namespace utm::ui
 
         if (activePerformanceView_ == PerformanceView::Cpu)
         {
-            const int cpuTopHeight = (std::max)(110, perfGraphHeight / 3);
-            const int cpuCoreHeight = (std::max)(90, perfGraphHeight - cpuTopHeight - perfGap);
-            MoveWindow(perfGraphCpu_, perfMainX, perfGraphTop, perfMainWidth, cpuTopHeight, TRUE);
-            MoveWindow(perfCoreGrid_, perfMainX, perfGraphTop + cpuTopHeight + perfGap, perfMainWidth, cpuCoreHeight, TRUE);
+            if (cpuGraphMode_ == CpuGraphMode::Single)
+            {
+                MoveWindow(perfGraphCpu_, perfMainX, perfGraphTop, perfMainWidth, perfGraphHeight, TRUE);
+            }
+            else
+            {
+                MoveWindow(perfCoreGrid_, perfMainX, perfGraphTop, perfMainWidth, perfGraphHeight, TRUE);
+            }
         }
         else if (activePerformanceView_ == PerformanceView::Memory)
         {
@@ -2353,6 +2394,8 @@ namespace utm::ui
         {
             ShowWindow(extraButton, perfTab ? SW_SHOW : SW_HIDE);
         }
+        ShowWindow(perfCpuModeSingle_, (perfTab && activePerformanceView_ == PerformanceView::Cpu) ? SW_SHOW : SW_HIDE);
+        ShowWindow(perfCpuModePerCore_, (perfTab && activePerformanceView_ == PerformanceView::Cpu) ? SW_SHOW : SW_HIDE);
         ShowWindow(perfDetails_, perfTab ? SW_SHOW : SW_HIDE);
 
         const bool showAll = perfTab && activePerformanceView_ == PerformanceView::All;
@@ -2363,10 +2406,13 @@ namespace utm::ui
         const bool showEthernet = perfTab && activePerformanceView_ == PerformanceView::Ethernet;
         const bool showGpu = perfTab && activePerformanceView_ == PerformanceView::Gpu;
 
-        ShowWindow(perfGraphCpu_, showCpu ? SW_SHOW : SW_HIDE);
+        const bool showCpuSingleGraph = showCpu && cpuGraphMode_ == CpuGraphMode::Single;
+        const bool showCpuPerCoreGrid = showCpu && cpuGraphMode_ == CpuGraphMode::PerCore;
+
+        ShowWindow(perfGraphCpu_, showCpuSingleGraph ? SW_SHOW : SW_HIDE);
         ShowWindow(perfGraphMemory_, showMemory ? SW_SHOW : SW_HIDE);
         ShowWindow(perfGraphGpu_, showMemory ? SW_SHOW : SW_HIDE);
-        ShowWindow(perfCoreGrid_, (showCpu || showGpu || showAll) ? SW_SHOW : SW_HIDE);
+        ShowWindow(perfCoreGrid_, (showCpuPerCoreGrid || showGpu || showAll) ? SW_SHOW : SW_HIDE);
 
         const bool showDualThroughput = showDisk || showWifi || showEthernet;
         ShowWindow(perfGraphUpload_, showDualThroughput ? SW_SHOW : SW_HIDE);
@@ -2408,9 +2454,37 @@ namespace utm::ui
         {
             perfAllScrollOffset_ = 0;
         }
+        if (activePerformanceView_ != PerformanceView::Cpu)
+        {
+            perfCpuCoreScrollOffset_ = 0;
+            perfCpuCoreContentHeight_ = 0;
+        }
         UpdatePerformanceSubviewSelection();
 
         if (activeSection_ == Section::Performance)
+        {
+            LayoutControls();
+            RefreshPerformancePanel();
+        }
+    }
+
+    void MainWindow::SetCpuGraphMode(CpuGraphMode mode)
+    {
+        if (cpuGraphMode_ == mode)
+        {
+            return;
+        }
+
+        cpuGraphMode_ = mode;
+        if (cpuGraphMode_ == CpuGraphMode::Single)
+        {
+            perfCpuCoreScrollOffset_ = 0;
+            perfCpuCoreContentHeight_ = 0;
+        }
+
+        UpdatePerformanceSubviewSelection();
+
+        if (activeSection_ == Section::Performance && activePerformanceView_ == PerformanceView::Cpu)
         {
             LayoutControls();
             RefreshPerformancePanel();
@@ -2454,6 +2528,8 @@ namespace utm::ui
         setChecked(perfNavWifi_, isDynamicBindingSelected(kIdPerfNavWifi));
         setChecked(perfNavEthernet_, isDynamicBindingSelected(kIdPerfNavEthernet));
         setChecked(perfNavGpu_, isDynamicBindingSelected(kIdPerfNavGpu));
+        setChecked(perfCpuModeSingle_, cpuGraphMode_ == CpuGraphMode::Single);
+        setChecked(perfCpuModePerCore_, cpuGraphMode_ == CpuGraphMode::PerCore);
 
         for (size_t i = 0; i < perfNavExtraButtons_.size(); ++i)
         {
@@ -2635,12 +2711,7 @@ namespace utm::ui
             PerformanceSubviewBinding binding{};
             binding.view = PerformanceView::Gpu;
             binding.sourceIndex = gpuIndex;
-            binding.label = L"GPU " + std::to_wstring(gpuIndex);
-            if (!gpuDevices_[gpuIndex].name.empty())
-            {
-                binding.label += L" | ";
-                binding.label += gpuDevices_[gpuIndex].name;
-            }
+            binding.label = L"GPU " + std::to_wstring(gpuIndex + 1);
             desiredBindings.push_back(std::move(binding));
         }
 
@@ -3096,6 +3167,7 @@ namespace utm::ui
             const std::uint64_t upMinutes = (uptimeSeconds % 3600) / 60;
 
             text << L"Utilization: " << static_cast<int>(totalCpuPercent_ + 0.5) << L"%\r\n"
+                 << L"Graph mode: " << (cpuGraphMode_ == CpuGraphMode::Single ? L"Single graph" : L"Per-core graphs (scroll to view all)") << L"\r\n"
                  << L"Processes: " << snapshot_.processes.size() << L" | Threads: " << totalThreads << L"\r\n"
                  << L"Uptime: " << upDays << L"d " << upHours << L"h " << upMinutes << L"m\r\n"
                  << L"Base speed: " << (baseMhz > 0 ? std::to_wstring(baseMhz) + L" MHz" : L"N/A") << L"\r\n"
@@ -3206,7 +3278,7 @@ namespace utm::ui
             }
 
             const size_t gpuIndex = static_cast<size_t>(gpu - gpuDevices_.data());
-            text << L"GPU " << gpuIndex << L": " << gpu->name << L"\r\n"
+            text << L"GPU " << (gpuIndex + 1) << L": " << gpu->name << L"\r\n"
                  << L"Utilization: " << static_cast<int>(gpu->utilizationPercent + 0.5) << L"%\r\n"
                  << L"3D " << static_cast<int>(gpu->engine3dPercent + 0.5)
                  << L"% | Copy " << static_cast<int>(gpu->engineCopyPercent + 0.5)
@@ -3444,10 +3516,10 @@ namespace utm::ui
                     }
 
                     gpu.luid = desc.AdapterLuid;
-                    gpu.name = desc.Description[0] != L'\0' ? desc.Description : (L"GPU " + std::to_wstring(index));
+                    gpu.name = desc.Description[0] != L'\0' ? desc.Description : (L"GPU " + std::to_wstring(index + 1));
 
                     std::wstringstream location;
-                    location << L"GPU " << index << L" LUID " << desc.AdapterLuid.HighPart << L":" << desc.AdapterLuid.LowPart;
+                    location << L"GPU " << (index + 1) << L" LUID " << desc.AdapterLuid.HighPart << L":" << desc.AdapterLuid.LowPart;
                     gpu.location = location.str();
 
                     gpu.dedicatedGb = static_cast<double>(desc.DedicatedVideoMemory) / kBytesPerGiB;
@@ -3692,7 +3764,9 @@ namespace utm::ui
             title = L"All Stats | Scroll to view every graph";
             break;
         case PerformanceView::Cpu:
-            title = L"CPU | Total and per-core activity";
+            title = cpuGraphMode_ == CpuGraphMode::Single
+                        ? L"CPU | Single graph mode"
+                        : L"CPU | Per-core mode (scroll to view all cores)";
             break;
         case PerformanceView::Memory:
             title = L"Memory | In-use and available trend";
@@ -3764,7 +3838,7 @@ namespace utm::ui
             }
 
             const size_t gpuIndex = static_cast<size_t>(gpu - gpuDevices_.data());
-            title = L"GPU " + std::to_wstring(gpuIndex);
+            title = L"GPU " + std::to_wstring(gpuIndex + 1);
             if (!gpu->name.empty())
             {
                 title += L" | ";
@@ -4476,7 +4550,10 @@ namespace utm::ui
             bool percent = false;
         };
 
-        auto renderCardCollection = [&](const std::wstring &heading, const std::vector<CardItem> &cards)
+        auto renderCardCollection = [&](const std::wstring &heading,
+                                        const std::vector<CardItem> &cards,
+                                        int *scrollOffsetState,
+                                        int *contentHeightState)
         {
             RECT titleRect = local;
             titleRect.left += 10;
@@ -4485,8 +4562,14 @@ namespace utm::ui
 
             if (cards.empty())
             {
-                const_cast<MainWindow *>(this)->perfAllScrollOffset_ = 0;
-                const_cast<MainWindow *>(this)->perfAllContentHeight_ = 0;
+                if (scrollOffsetState)
+                {
+                    *scrollOffsetState = 0;
+                }
+                if (contentHeightState)
+                {
+                    *contentHeightState = 0;
+                }
 
                 RECT emptyRect = local;
                 emptyRect.left += 10;
@@ -4499,17 +4582,23 @@ namespace utm::ui
             const int topMargin = 30;
             const int bottomMargin = 8;
             const int gap = 10;
-            const int cols = 2;
-            const int cardWidth = (std::max)(100, (width - 16 - gap) / cols);
+            const int cols = width >= 280 ? 2 : 1;
+            const int cardWidth = (std::max)(100, (width - 16 - (cols > 1 ? gap : 0)) / cols);
             const int cardHeight = 132;
             const int rows = static_cast<int>((cards.size() + cols - 1) / cols);
             const int contentHeight = rows * (cardHeight + gap) - gap + topMargin + bottomMargin;
             const int viewportHeight = (std::max)(1, height - topMargin - bottomMargin);
             const int maxOffset = (std::max)(0, contentHeight - viewportHeight);
 
-            int scrollOffset = (std::clamp)(perfAllScrollOffset_, 0, maxOffset);
-            const_cast<MainWindow *>(this)->perfAllScrollOffset_ = scrollOffset;
-            const_cast<MainWindow *>(this)->perfAllContentHeight_ = contentHeight;
+            int scrollOffset = scrollOffsetState ? (std::clamp)(*scrollOffsetState, 0, maxOffset) : 0;
+            if (scrollOffsetState)
+            {
+                *scrollOffsetState = scrollOffset;
+            }
+            if (contentHeightState)
+            {
+                *contentHeightState = contentHeight;
+            }
 
             for (size_t i = 0; i < cards.size(); ++i)
             {
@@ -4553,6 +4642,8 @@ namespace utm::ui
             }
         };
 
+        auto *mutableSelf = const_cast<MainWindow *>(this);
+
         if (activePerformanceView_ == PerformanceView::All ||
             activePerformanceView_ == PerformanceView::Gpu)
         {
@@ -4591,7 +4682,7 @@ namespace utm::ui
                 {
                     const auto &gpu = gpuDevices_[i];
                     const COLORREF color = kGpuPalette[i % (sizeof(kGpuPalette) / sizeof(kGpuPalette[0]))];
-                    cards.push_back({L"GPU " + std::to_wstring(i) + L" Util", &gpu.utilizationHistory, gpu.utilizationPercent, 100.0, color, L"%", true});
+                    cards.push_back({L"GPU " + std::to_wstring(i + 1) + L" Util", &gpu.utilizationHistory, gpu.utilizationPercent, 100.0, color, L"%", true});
                 }
             }
             else
@@ -4605,7 +4696,7 @@ namespace utm::ui
                 {
                     const size_t gpuIndex = static_cast<size_t>(gpu - gpuDevices_.data());
                     heading = L"GPU ";
-                    heading += std::to_wstring(gpuIndex);
+                    heading += std::to_wstring(gpuIndex + 1);
                     if (!gpu->name.empty())
                     {
                         heading += L" | ";
@@ -4620,7 +4711,7 @@ namespace utm::ui
                 }
             }
 
-            renderCardCollection(heading, cards);
+            renderCardCollection(heading, cards, &mutableSelf->perfAllScrollOffset_, &mutableSelf->perfAllContentHeight_);
 
             BitBlt(targetDc, rc.left, rc.top, width, height, dc, 0, 0, SRCCOPY);
             SelectObject(dc, oldBitmap);
@@ -4629,189 +4720,42 @@ namespace utm::ui
             return;
         }
 
-        RECT titleRect = local;
-        titleRect.left += 10;
-        titleRect.top += 5;
-        DrawTextW(dc, L"Per-Core CPU Graphs", -1, &titleRect, DT_LEFT | DT_TOP | DT_SINGLELINE);
-
-        const size_t coreCount = performanceCoreHistory_.size();
-        if (coreCount == 0)
+        if (activePerformanceView_ == PerformanceView::Cpu && cpuGraphMode_ == CpuGraphMode::PerCore)
         {
-            RECT waitRect = local;
-            waitRect.left += 10;
-            waitRect.top += 26;
+            constexpr COLORREF kCorePalette[] = {
+                RGB(68, 128, 245), RGB(25, 173, 123), RGB(130, 102, 246), RGB(229, 140, 28),
+                RGB(210, 84, 109), RGB(23, 163, 203), RGB(163, 119, 230), RGB(94, 138, 40)};
+
+            std::vector<CardItem> cards;
+            cards.reserve(performanceCoreHistory_.size());
+
+            for (size_t idx = 0; idx < performanceCoreHistory_.size(); ++idx)
+            {
+                double usageValue = 0.0;
+                if (idx < performanceCoreUsage_.size())
+                {
+                    usageValue = performanceCoreUsage_[idx];
+                }
+
+                const COLORREF color = kCorePalette[idx % (sizeof(kCorePalette) / sizeof(kCorePalette[0]))];
+                cards.push_back({L"Core " + std::to_wstring(idx), &performanceCoreHistory_[idx], usageValue, 100.0, color, L"%", true});
+            }
+
+            renderCardCollection(
+                L"Per-Core CPU Graphs (scroll with mouse wheel)",
+                cards,
+                &mutableSelf->perfCpuCoreScrollOffset_,
+                &mutableSelf->perfCpuCoreContentHeight_);
+        }
+        else
+        {
+            mutableSelf->perfCpuCoreScrollOffset_ = 0;
+            mutableSelf->perfCpuCoreContentHeight_ = 0;
+            RECT infoRect = local;
+            infoRect.left += 10;
+            infoRect.top += 8;
             SetTextColor(dc, RGB(104, 118, 141));
-            DrawTextW(dc, L"Collecting core samples...", -1, &waitRect, DT_LEFT | DT_TOP | DT_SINGLELINE);
-
-            BitBlt(targetDc, rc.left, rc.top, width, height, dc, 0, 0, SRCCOPY);
-            SelectObject(dc, oldBitmap);
-            DeleteObject(bitmap);
-            DeleteDC(dc);
-            return;
-        }
-
-        RECT grid = local;
-        grid.left += 8;
-        grid.right -= 8;
-        grid.top += 26;
-        grid.bottom -= 8;
-
-        const int gap = 6;
-        const int gridWidth = (std::max)(1, static_cast<int>(grid.right - grid.left));
-        const int gridHeight = (std::max)(1, static_cast<int>(grid.bottom - grid.top));
-
-        int columns = (std::max)(1, gridWidth / 110);
-        columns = (std::min)(columns, static_cast<int>(coreCount));
-        int rows = static_cast<int>((coreCount + static_cast<size_t>(columns) - 1) / static_cast<size_t>(columns));
-
-        while (rows > 1)
-        {
-            const int nextColumns = columns + 1;
-            if (nextColumns > static_cast<int>(coreCount))
-            {
-                break;
-            }
-
-            const int candidateTileWidth = (gridWidth - gap * (nextColumns - 1)) / nextColumns;
-            if (candidateTileWidth < 90)
-            {
-                break;
-            }
-
-            const int candidateRows = static_cast<int>((coreCount + static_cast<size_t>(nextColumns) - 1) / static_cast<size_t>(nextColumns));
-            const int candidateTileHeight = (gridHeight - gap * (candidateRows - 1)) / candidateRows;
-            if (candidateTileHeight < 44)
-            {
-                break;
-            }
-
-            columns = nextColumns;
-            rows = candidateRows;
-        }
-
-        const int tileWidth = (std::max)(90, (std::min)(180, (gridWidth - gap * (columns - 1)) / columns));
-        const int tileHeight = (std::max)(42, (std::min)(58, (gridHeight - gap * (rows - 1)) / rows));
-
-        constexpr COLORREF kCorePalette[] = {
-            RGB(68, 128, 245), RGB(25, 173, 123), RGB(130, 102, 246), RGB(229, 140, 28),
-            RGB(210, 84, 109), RGB(23, 163, 203), RGB(163, 119, 230), RGB(94, 138, 40)};
-
-        for (size_t idx = 0; idx < coreCount; ++idx)
-        {
-            const int row = static_cast<int>(idx / static_cast<size_t>(columns));
-            const int col = static_cast<int>(idx % static_cast<size_t>(columns));
-
-            RECT tile{
-                grid.left + col * (tileWidth + gap),
-                grid.top + row * (tileHeight + gap),
-                grid.left + col * (tileWidth + gap) + tileWidth,
-                grid.top + row * (tileHeight + gap) + tileHeight};
-
-            if (tile.top >= grid.bottom)
-            {
-                break;
-            }
-            if (tile.right > grid.right)
-            {
-                tile.right = grid.right;
-            }
-            if (tile.bottom > grid.bottom)
-            {
-                tile.bottom = grid.bottom;
-            }
-
-            HBRUSH tileBrush = CreateSolidBrush(RGB(247, 250, 255));
-            FillRect(dc, &tile, tileBrush);
-            DeleteObject(tileBrush);
-
-            HPEN tileBorder = CreatePen(PS_SOLID, 1, RGB(216, 225, 239));
-            oldPen = reinterpret_cast<HPEN>(SelectObject(dc, tileBorder));
-            oldBrush = reinterpret_cast<HBRUSH>(SelectObject(dc, GetStockObject(NULL_BRUSH)));
-            Rectangle(dc, tile.left, tile.top, tile.right, tile.bottom);
-            SelectObject(dc, oldBrush);
-            SelectObject(dc, oldPen);
-            DeleteObject(tileBorder);
-
-            RECT nameRect = tile;
-            nameRect.left += 5;
-            nameRect.top += 3;
-            std::wstring coreLabel = L"Core ";
-            coreLabel += std::to_wstring(idx);
-            SetTextColor(dc, RGB(53, 68, 94));
-            DrawTextW(dc, coreLabel.c_str(), -1, &nameRect, DT_LEFT | DT_TOP | DT_SINGLELINE);
-
-            RECT usageRect = tile;
-            usageRect.right -= 5;
-            usageRect.top += 3;
-            double usageValue = 0.0;
-            if (idx < performanceCoreUsage_.size())
-            {
-                usageValue = performanceCoreUsage_[idx];
-            }
-            std::wstring usageText = std::to_wstring(static_cast<int>(usageValue + 0.5));
-            usageText += L"%";
-            DrawTextW(dc, usageText.c_str(), -1, &usageRect, DT_RIGHT | DT_TOP | DT_SINGLELINE);
-
-            RECT chart = tile;
-            chart.left += 4;
-            chart.right -= 4;
-            chart.top += 18;
-            chart.bottom -= 4;
-
-            const int chartWidth = (std::max)(1, static_cast<int>(chart.right - chart.left));
-            const int chartHeight = (std::max)(1, static_cast<int>(chart.bottom - chart.top));
-
-            HPEN gridPen = CreatePen(PS_SOLID, 1, RGB(228, 234, 245));
-            oldPen = reinterpret_cast<HPEN>(SelectObject(dc, gridPen));
-            for (int line = 1; line <= 2; ++line)
-            {
-                const int y = chart.top + (chartHeight * line) / 3;
-                MoveToEx(dc, chart.left, y, nullptr);
-                LineTo(dc, chart.right, y);
-            }
-            SelectObject(dc, oldPen);
-            DeleteObject(gridPen);
-
-            const auto &series = performanceCoreHistory_[idx];
-            if (series.size() >= 2)
-            {
-                const COLORREF baseColor = kCorePalette[idx % (sizeof(kCorePalette) / sizeof(kCorePalette[0]))];
-
-                std::vector<POINT> points;
-                const int n = static_cast<int>(series.size());
-                points.reserve(n);
-                for (int i = 0; i < n; ++i)
-                {
-                    const double sample = (std::clamp)(series[i], 0.0, 100.0);
-                    const int x = chart.left + ((chartWidth - 1) * i) / (n - 1);
-                    const int y = chart.bottom - static_cast<int>((sample / 100.0) * (chartHeight - 1));
-                    points.push_back(POINT{x, y});
-                }
-
-                std::vector<POINT> area;
-                area.reserve(points.size() + 2);
-                area.push_back(POINT{points.front().x, chart.bottom});
-                area.insert(area.end(), points.begin(), points.end());
-                area.push_back(POINT{points.back().x, chart.bottom});
-
-                HBRUSH areaBrush = CreateSolidBrush(BlendColor(baseColor, RGB(255, 255, 255), 0.82));
-                HBRUSH prevAreaBrush = reinterpret_cast<HBRUSH>(SelectObject(dc, areaBrush));
-                HPEN nullPen = reinterpret_cast<HPEN>(SelectObject(dc, GetStockObject(NULL_PEN)));
-                Polygon(dc, area.data(), static_cast<int>(area.size()));
-                SelectObject(dc, nullPen);
-                SelectObject(dc, prevAreaBrush);
-                DeleteObject(areaBrush);
-
-                HPEN linePen = CreatePen(PS_SOLID, 1, baseColor);
-                HPEN prevPen = reinterpret_cast<HPEN>(SelectObject(dc, linePen));
-                MoveToEx(dc, points.front().x, points.front().y, nullptr);
-                for (size_t p = 1; p < points.size(); ++p)
-                {
-                    LineTo(dc, points[p].x, points[p].y);
-                }
-                SelectObject(dc, prevPen);
-                DeleteObject(linePen);
-            }
+            DrawTextW(dc, L"Per-core CPU view is hidden in Single Graph mode.", -1, &infoRect, DT_LEFT | DT_TOP | DT_SINGLELINE);
         }
 
         BitBlt(targetDc, rc.left, rc.top, width, height, dc, 0, 0, SRCCOPY);

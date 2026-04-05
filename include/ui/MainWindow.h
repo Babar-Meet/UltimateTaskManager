@@ -67,6 +67,12 @@ namespace utm::ui
             Gpu
         };
 
+        enum class CpuGraphMode
+        {
+            Single,
+            PerCore
+        };
+
         struct NetworkInterfacePerf;
         struct GpuPerf;
         struct PerformanceSubviewBinding;
@@ -84,6 +90,7 @@ namespace utm::ui
         void UpdateSidebarSelection();
         std::wstring SectionTitleText() const;
         void SetActivePerformanceView(PerformanceView view);
+        void SetCpuGraphMode(CpuGraphMode mode);
         void UpdatePerformanceSubviewSelection();
         void RebuildPerformanceSubviewNavigation();
         bool HandleDynamicPerformanceSubviewCommand(UINT id);
@@ -193,6 +200,8 @@ namespace utm::ui
         HWND perfNavWifi_ = nullptr;
         HWND perfNavEthernet_ = nullptr;
         HWND perfNavGpu_ = nullptr;
+        HWND perfCpuModeSingle_ = nullptr;
+        HWND perfCpuModePerCore_ = nullptr;
         std::vector<HWND> perfNavExtraButtons_;
         HWND perfCoreGrid_ = nullptr;
         HWND perfGraphCpu_ = nullptr;
@@ -338,8 +347,11 @@ namespace utm::ui
         bool sortAscending_ = false;
         Section activeSection_ = Section::QuickKillTools;
         PerformanceView activePerformanceView_ = PerformanceView::All;
+        CpuGraphMode cpuGraphMode_ = CpuGraphMode::Single;
         int perfAllScrollOffset_ = 0;
         int perfAllContentHeight_ = 0;
+        int perfCpuCoreScrollOffset_ = 0;
+        int perfCpuCoreContentHeight_ = 0;
 
         std::wstring quickDeleteTargetPath_;
         bool quickDeleteTargetIsDirectory_ = false;
