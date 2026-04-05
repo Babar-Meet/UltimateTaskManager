@@ -57,6 +57,7 @@ namespace utm::ui
 
         enum class PerformanceView
         {
+            All,
             Cpu,
             Memory,
             Disk,
@@ -124,6 +125,7 @@ namespace utm::ui
         HWND processList_ = nullptr;
         HWND performancePlaceholder_ = nullptr;
         HWND perfNavPanel_ = nullptr;
+        HWND perfNavAll_ = nullptr;
         HWND perfNavCpu_ = nullptr;
         HWND perfNavMemory_ = nullptr;
         HWND perfNavDisk_ = nullptr;
@@ -194,7 +196,14 @@ namespace utm::ui
         double memoryPercent_ = 0.0;
         double memoryUsedGb_ = 0.0;
         double memoryTotalGb_ = 0.0;
+        double memoryAvailableGb_ = 0.0;
+        double memoryCommittedGb_ = 0.0;
+        double memoryCommitLimitGb_ = 0.0;
         double gpuPercent_ = 0.0;
+        double gpu3dPercent_ = 0.0;
+        double gpuCopyPercent_ = 0.0;
+        double gpuDecodePercent_ = 0.0;
+        double gpuEncodePercent_ = 0.0;
         double uploadMbps_ = 0.0;
         double downloadMbps_ = 0.0;
         double wifiUploadMbps_ = 0.0;
@@ -215,6 +224,8 @@ namespace utm::ui
         double diskWriteScaleMBps_ = 10.0;
         double gpuDedicatedGb_ = 0.0;
         double gpuSharedGb_ = 0.0;
+        double gpuDedicatedUsedGb_ = 0.0;
+        double gpuSharedUsedGb_ = 0.0;
         bool gpuCounterReady_ = false;
         bool diskCounterReady_ = false;
 
@@ -225,13 +236,22 @@ namespace utm::ui
         std::wstring ethernetIpv4_;
         std::wstring ethernetIpv6_;
         std::wstring gpuAdapterName_;
+        std::wstring gpuAdaptersSummary_;
         std::wstring gpuLocation_;
         std::wstring diskType_;
         std::wstring systemDrive_;
 
         std::deque<double> cpuHistory_;
         std::deque<double> memoryHistory_;
+        std::deque<double> memoryAvailableHistory_;
+        std::deque<double> memoryCommittedHistory_;
         std::deque<double> gpuHistory_;
+        std::deque<double> gpu3dHistory_;
+        std::deque<double> gpuCopyHistory_;
+        std::deque<double> gpuDecodeHistory_;
+        std::deque<double> gpuEncodeHistory_;
+        std::deque<double> gpuDedicatedHistory_;
+        std::deque<double> gpuSharedHistory_;
         std::deque<double> uploadHistory_;
         std::deque<double> downloadHistory_;
         std::deque<double> wifiUploadHistory_;
@@ -253,7 +273,9 @@ namespace utm::ui
         SortColumn sortColumn_ = SortColumn::Cpu;
         bool sortAscending_ = false;
         Section activeSection_ = Section::QuickKillTools;
-        PerformanceView activePerformanceView_ = PerformanceView::Cpu;
+        PerformanceView activePerformanceView_ = PerformanceView::All;
+        int perfAllScrollOffset_ = 0;
+        int perfAllContentHeight_ = 0;
 
         std::wstring quickDeleteTargetPath_;
         bool quickDeleteTargetIsDirectory_ = false;

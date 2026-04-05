@@ -74,13 +74,14 @@ namespace
     constexpr int kIdQuickDeleteLabel = 1037;
     constexpr int kIdQuickDeletePathEdit = 1038;
     constexpr int kIdPerfNavPanel = 1039;
-    constexpr int kIdPerfNavCpu = 1040;
-    constexpr int kIdPerfNavMemory = 1041;
-    constexpr int kIdPerfNavDisk = 1042;
-    constexpr int kIdPerfNavWifi = 1043;
-    constexpr int kIdPerfNavEthernet = 1044;
-    constexpr int kIdPerfNavGpu = 1045;
-    constexpr int kIdPerfDetails = 1046;
+    constexpr int kIdPerfNavAll = 1040;
+    constexpr int kIdPerfNavCpu = 1041;
+    constexpr int kIdPerfNavMemory = 1042;
+    constexpr int kIdPerfNavDisk = 1043;
+    constexpr int kIdPerfNavWifi = 1044;
+    constexpr int kIdPerfNavEthernet = 1045;
+    constexpr int kIdPerfNavGpu = 1046;
+    constexpr int kIdPerfDetails = 1047;
 
     constexpr int kIdQuickToolPortKillAll = 41000;
     constexpr int kIdQuickToolProcessKillAll = 41001;
@@ -902,6 +903,12 @@ namespace utm::ui
                 return 0;
             }
 
+            if (id == kIdPerfNavAll)
+            {
+                SetActivePerformanceView(PerformanceView::All);
+                return 0;
+            }
+
             if (id == kIdPerfNavMemory)
             {
                 SetActivePerformanceView(PerformanceView::Memory);
@@ -1308,6 +1315,7 @@ namespace utm::ui
             }
 
             if (control == perfNavCpu_ ||
+                control == perfNavAll_ ||
                 control == perfNavMemory_ ||
                 control == perfNavDisk_ ||
                 control == perfNavWifi_ ||
@@ -1331,6 +1339,34 @@ namespace utm::ui
             GetClientRect(hwnd_, &rc);
             FillRect(dc, &rc, backgroundBrush_);
             return 1;
+        }
+
+        case WM_MOUSEWHEEL:
+        {
+            if (activeSection_ == Section::Performance && activePerformanceView_ == PerformanceView::All && perfCoreGrid_)
+            {
+                RECT area{};
+                GetWindowRect(perfCoreGrid_, &area);
+
+                POINT mouse{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+                if (PtInRect(&area, mouse))
+                {
+                    const int wheelSteps = GET_WHEEL_DELTA_WPARAM(wParam) / WHEEL_DELTA;
+                    if (wheelSteps != 0)
+                    {
+                        RECT client{};
+                        GetClientRect(perfCoreGrid_, &client);
+                        const int viewport = (std::max)(1, static_cast<int>(client.bottom - client.top));
+                        const int maxOffset = (std::max)(0, perfAllContentHeight_ - viewport);
+                        const int nextOffset = perfAllScrollOffset_ - wheelSteps * 40;
+                        perfAllScrollOffset_ = (std::clamp)(nextOffset, 0, maxOffset);
+                        InvalidateRect(perfCoreGrid_, nullptr, FALSE);
+                    }
+                    return 0;
+                }
+            }
+
+            break;
         }
 
         case WM_DRAWITEM:
@@ -1582,7 +1618,8 @@ namespace utm::ui
                 nullptr);
         };
 
-        perfNavCpu_ = createPerfNavButton(kIdPerfNavCpu, L"CPU", WS_GROUP);
+        perfNavAll_ = createPerfNavButton(kIdPerfNavAll, L"All Stats", WS_GROUP);
+        perfNavCpu_ = createPerfNavButton(kIdPerfNavCpu, L"CPU", 0);
         perfNavMemory_ = createPerfNavButton(kIdPerfNavMemory, L"Memory", 0);
         perfNavDisk_ = createPerfNavButton(kIdPerfNavDisk, L"Disk", 0);
         perfNavWifi_ = createPerfNavButton(kIdPerfNavWifi, L"Wi-Fi", 0);
@@ -1936,7 +1973,7 @@ namespace utm::ui
 
         if (!sidebarTitle_ || !navProcesses_ || !navPerformance_ || !navNetwork_ || !navHardware_ || !navServices_ || !navStartupApps_ || !navUsers_ || !navQuickTools_ ||
             !sectionTitle_ || !filterLabel_ || !filterEdit_ || !processList_ ||
-            !performancePlaceholder_ || !perfNavPanel_ || !perfNavCpu_ || !perfNavMemory_ || !perfNavDisk_ || !perfNavWifi_ || !perfNavEthernet_ || !perfNavGpu_ ||
+            !performancePlaceholder_ || !perfNavPanel_ || !perfNavAll_ || !perfNavCpu_ || !perfNavMemory_ || !perfNavDisk_ || !perfNavWifi_ || !perfNavEthernet_ || !perfNavGpu_ ||
             !perfGraphCpu_ || !perfGraphMemory_ || !perfGraphGpu_ || !perfGraphUpload_ || !perfGraphDownload_ || !perfCoreGrid_ || !perfDetails_ ||
             !networkPlaceholder_ || !hardwarePlaceholder_ || !servicesPlaceholder_ || !startupAppsPlaceholder_ || !usersPlaceholder_ ||
             !quickToolsTitle_ || !quickToolsHint_ ||
@@ -1966,6 +2003,7 @@ namespace utm::ui
         applyFont(processList_, uiFont_);
         applyFont(performancePlaceholder_, uiFont_);
         applyFont(perfNavPanel_, uiFont_);
+        applyFont(perfNavAll_, uiBoldFont_);
         applyFont(perfNavCpu_, uiBoldFont_);
         applyFont(perfNavMemory_, uiBoldFont_);
         applyFont(perfNavDisk_, uiBoldFont_);
@@ -2072,6 +2110,8 @@ namespace utm::ui
         const int perfNavX = contentX + 8;
         const int perfNavW = perfSidebarWidth - 16;
         int perfNavY = bodyTop + 8;
+        MoveWindow(perfNavAll_, perfNavX, perfNavY, perfNavW, 30, TRUE);
+        perfNavY += 36;
         MoveWindow(perfNavCpu_, perfNavX, perfNavY, perfNavW, 30, TRUE);
         perfNavY += 36;
         MoveWindow(perfNavMemory_, perfNavX, perfNavY, perfNavW, 30, TRUE);
@@ -2087,21 +2127,56 @@ namespace utm::ui
         MoveWindow(performancePlaceholder_, perfMainX, bodyTop, perfMainWidth, perfHeaderHeight, TRUE);
         MoveWindow(perfDetails_, perfMainX, perfDetailsTop, perfMainWidth, perfDetailsHeight, TRUE);
 
-        const int perfHalfWidth = (perfMainWidth - perfGap) / 2;
-
         MoveWindow(perfGraphCpu_, perfMainX, perfGraphTop, perfMainWidth, perfGraphHeight, TRUE);
         MoveWindow(perfGraphMemory_, perfMainX, perfGraphTop, perfMainWidth, perfGraphHeight, TRUE);
         MoveWindow(perfGraphGpu_, perfMainX, perfGraphTop, perfMainWidth, perfGraphHeight, TRUE);
-        MoveWindow(perfGraphUpload_, perfMainX, perfGraphTop, perfHalfWidth, perfGraphHeight, TRUE);
-        MoveWindow(perfGraphDownload_, perfMainX + perfHalfWidth + perfGap, perfGraphTop, perfMainWidth - perfHalfWidth - perfGap, perfGraphHeight, TRUE);
+        MoveWindow(perfGraphUpload_, perfMainX, perfGraphTop, perfMainWidth, perfGraphHeight, TRUE);
+        MoveWindow(perfGraphDownload_, perfMainX, perfGraphTop, perfMainWidth, perfGraphHeight, TRUE);
         MoveWindow(perfCoreGrid_, perfMainX, perfGraphTop, perfMainWidth, perfGraphHeight, TRUE);
 
         if (activePerformanceView_ == PerformanceView::Cpu)
         {
-            const int cpuTopHeight = (std::max)(100, perfGraphHeight / 3);
-            const int cpuCoreHeight = (std::max)(80, perfGraphHeight - cpuTopHeight - perfGap);
+            const int cpuTopHeight = (std::max)(110, perfGraphHeight / 3);
+            const int cpuCoreHeight = (std::max)(90, perfGraphHeight - cpuTopHeight - perfGap);
             MoveWindow(perfGraphCpu_, perfMainX, perfGraphTop, perfMainWidth, cpuTopHeight, TRUE);
             MoveWindow(perfCoreGrid_, perfMainX, perfGraphTop + cpuTopHeight + perfGap, perfMainWidth, cpuCoreHeight, TRUE);
+        }
+        else if (activePerformanceView_ == PerformanceView::Memory)
+        {
+            const int memMainHeight = (std::max)(120, (perfGraphHeight * 2) / 3);
+            const int memSubHeight = (std::max)(80, perfGraphHeight - memMainHeight - perfGap);
+            MoveWindow(perfGraphMemory_, perfMainX, perfGraphTop, perfMainWidth, memMainHeight, TRUE);
+            MoveWindow(perfGraphGpu_, perfMainX, perfGraphTop + memMainHeight + perfGap, perfMainWidth, memSubHeight, TRUE);
+        }
+        else if (activePerformanceView_ == PerformanceView::Disk ||
+                 activePerformanceView_ == PerformanceView::Wifi ||
+                 activePerformanceView_ == PerformanceView::Ethernet)
+        {
+            const int perfHalfWidth = (perfMainWidth - perfGap) / 2;
+            MoveWindow(perfGraphUpload_, perfMainX, perfGraphTop, perfHalfWidth, perfGraphHeight, TRUE);
+            MoveWindow(perfGraphDownload_, perfMainX + perfHalfWidth + perfGap, perfGraphTop, perfMainWidth - perfHalfWidth - perfGap, perfGraphHeight, TRUE);
+        }
+        else if (activePerformanceView_ == PerformanceView::Gpu)
+        {
+            const int cols = 2;
+            const int rows = 3;
+            const int cardWidth = (perfMainWidth - perfGap) / cols;
+            const int cardHeight = (std::max)(80, (perfGraphHeight - perfGap * (rows - 1)) / rows);
+
+            const int row1 = perfGraphTop;
+            const int row2 = row1 + cardHeight + perfGap;
+            const int row3 = row2 + cardHeight + perfGap;
+
+            MoveWindow(perfGraphCpu_, perfMainX, row1, cardWidth, cardHeight, TRUE);
+            MoveWindow(perfGraphMemory_, perfMainX + cardWidth + perfGap, row1, perfMainWidth - cardWidth - perfGap, cardHeight, TRUE);
+            MoveWindow(perfGraphUpload_, perfMainX, row2, cardWidth, cardHeight, TRUE);
+            MoveWindow(perfGraphDownload_, perfMainX + cardWidth + perfGap, row2, perfMainWidth - cardWidth - perfGap, cardHeight, TRUE);
+            MoveWindow(perfGraphGpu_, perfMainX, row3, cardWidth, cardHeight, TRUE);
+            MoveWindow(perfCoreGrid_, perfMainX + cardWidth + perfGap, row3, perfMainWidth - cardWidth - perfGap, cardHeight, TRUE);
+        }
+        else if (activePerformanceView_ == PerformanceView::All)
+        {
+            MoveWindow(perfCoreGrid_, perfMainX, perfGraphTop, perfMainWidth, perfGraphHeight, TRUE);
         }
 
         int quickY = bodyTop + 4;
@@ -2159,6 +2234,7 @@ namespace utm::ui
 
         ShowWindow(performancePlaceholder_, perfTab ? SW_SHOW : SW_HIDE);
         ShowWindow(perfNavPanel_, perfTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(perfNavAll_, perfTab ? SW_SHOW : SW_HIDE);
         ShowWindow(perfNavCpu_, perfTab ? SW_SHOW : SW_HIDE);
         ShowWindow(perfNavMemory_, perfTab ? SW_SHOW : SW_HIDE);
         ShowWindow(perfNavDisk_, perfTab ? SW_SHOW : SW_HIDE);
@@ -2167,6 +2243,7 @@ namespace utm::ui
         ShowWindow(perfNavGpu_, perfTab ? SW_SHOW : SW_HIDE);
         ShowWindow(perfDetails_, perfTab ? SW_SHOW : SW_HIDE);
 
+        const bool showAll = perfTab && activePerformanceView_ == PerformanceView::All;
         const bool showCpu = perfTab && activePerformanceView_ == PerformanceView::Cpu;
         const bool showMemory = perfTab && activePerformanceView_ == PerformanceView::Memory;
         const bool showDisk = perfTab && activePerformanceView_ == PerformanceView::Disk;
@@ -2174,12 +2251,12 @@ namespace utm::ui
         const bool showEthernet = perfTab && activePerformanceView_ == PerformanceView::Ethernet;
         const bool showGpu = perfTab && activePerformanceView_ == PerformanceView::Gpu;
 
-        ShowWindow(perfGraphCpu_, showCpu ? SW_SHOW : SW_HIDE);
-        ShowWindow(perfCoreGrid_, showCpu ? SW_SHOW : SW_HIDE);
-        ShowWindow(perfGraphMemory_, showMemory ? SW_SHOW : SW_HIDE);
-        ShowWindow(perfGraphGpu_, showGpu ? SW_SHOW : SW_HIDE);
+        ShowWindow(perfGraphCpu_, (showCpu || showGpu) ? SW_SHOW : SW_HIDE);
+        ShowWindow(perfGraphMemory_, (showMemory || showGpu) ? SW_SHOW : SW_HIDE);
+        ShowWindow(perfGraphGpu_, (showMemory || showGpu) ? SW_SHOW : SW_HIDE);
+        ShowWindow(perfCoreGrid_, (showCpu || showGpu || showAll) ? SW_SHOW : SW_HIDE);
 
-        const bool showDualThroughput = showDisk || showWifi || showEthernet;
+        const bool showDualThroughput = showDisk || showWifi || showEthernet || showGpu;
         ShowWindow(perfGraphUpload_, showDualThroughput ? SW_SHOW : SW_HIDE);
         ShowWindow(perfGraphDownload_, showDualThroughput ? SW_SHOW : SW_HIDE);
 
@@ -2214,6 +2291,10 @@ namespace utm::ui
         }
 
         activePerformanceView_ = view;
+        if (activePerformanceView_ == PerformanceView::All)
+        {
+            perfAllScrollOffset_ = 0;
+        }
         UpdatePerformanceSubviewSelection();
 
         if (activeSection_ == Section::Performance)
@@ -2225,9 +2306,12 @@ namespace utm::ui
 
     void MainWindow::UpdatePerformanceSubviewSelection()
     {
-        int checked = kIdPerfNavCpu;
+        int checked = kIdPerfNavAll;
         switch (activePerformanceView_)
         {
+        case PerformanceView::All:
+            checked = kIdPerfNavAll;
+            break;
         case PerformanceView::Cpu:
             checked = kIdPerfNavCpu;
             break;
@@ -2248,7 +2332,7 @@ namespace utm::ui
             break;
         }
 
-        CheckRadioButton(hwnd_, kIdPerfNavCpu, kIdPerfNavGpu, checked);
+        CheckRadioButton(hwnd_, kIdPerfNavAll, kIdPerfNavGpu, checked);
     }
 
     void MainWindow::SetActiveSection(Section section)
@@ -2345,6 +2429,10 @@ namespace utm::ui
     {
         if (!gpuCounterReady_ || !gpuQuery_ || !gpuCounter_)
         {
+            gpu3dPercent_ = 0.0;
+            gpuCopyPercent_ = 0.0;
+            gpuDecodePercent_ = 0.0;
+            gpuEncodePercent_ = 0.0;
             return 0.0;
         }
 
@@ -2374,16 +2462,48 @@ namespace utm::ui
             return 0.0;
         }
 
+        double engine3d = 0.0;
+        double engineCopy = 0.0;
+        double engineDecode = 0.0;
+        double engineEncode = 0.0;
         double total = 0.0;
         for (DWORD i = 0; i < itemCount; ++i)
         {
             if (items[i].FmtValue.CStatus == ERROR_SUCCESS && items[i].FmtValue.doubleValue > 0.0)
             {
-                total += items[i].FmtValue.doubleValue;
+                const double value = items[i].FmtValue.doubleValue;
+                total += value;
+
+                const std::wstring name = items[i].szName ? ToLower(items[i].szName) : L"";
+                if (name.find(L"engtype_3d") != std::wstring::npos)
+                {
+                    engine3d += value;
+                }
+                else if (name.find(L"engtype_copy") != std::wstring::npos)
+                {
+                    engineCopy += value;
+                }
+                else if (name.find(L"engtype_videodecode") != std::wstring::npos ||
+                         name.find(L"engtype_video decode") != std::wstring::npos)
+                {
+                    engineDecode += value;
+                }
+                else if (name.find(L"engtype_videoencode") != std::wstring::npos ||
+                         name.find(L"engtype_video encode") != std::wstring::npos)
+                {
+                    engineEncode += value;
+                }
             }
         }
 
-        return (std::clamp)(total, 0.0, 100.0);
+        gpu3dPercent_ = (std::clamp)(engine3d, 0.0, 100.0);
+        gpuCopyPercent_ = (std::clamp)(engineCopy, 0.0, 100.0);
+        gpuDecodePercent_ = (std::clamp)(engineDecode, 0.0, 100.0);
+        gpuEncodePercent_ = (std::clamp)(engineEncode, 0.0, 100.0);
+
+        const double byEngine = (std::max)((std::max)(gpu3dPercent_, gpuCopyPercent_), (std::max)(gpuDecodePercent_, gpuEncodePercent_));
+        const double fallback = (std::clamp)(total, 0.0, 100.0);
+        return byEngine > 0.0 ? byEngine : fallback;
     }
 
     void MainWindow::UpdateNetworkAdapterInfo()
@@ -2465,6 +2585,18 @@ namespace utm::ui
 
         switch (activePerformanceView_)
         {
+        case PerformanceView::All:
+            text << L"Overview mode: all available graphs in one scrollable canvas.\r\n"
+                 << L"CPU " << static_cast<int>(totalCpuPercent_ + 0.5) << L"% | Memory " << FormatNumber(memoryUsedGb_, 1) << L" / " << FormatNumber(memoryTotalGb_, 1) << L" GB\r\n"
+                 << L"Disk R/W " << FormatNumber(diskReadMBps_, 1) << L" / " << FormatNumber(diskWriteMBps_, 1) << L" MB/s | Active " << static_cast<int>(diskActivePercent_ + 0.5) << L"%\r\n"
+                 << L"Wi-Fi U/D " << FormatNumber(wifiUploadMbps_, 1) << L" / " << FormatNumber(wifiDownloadMbps_, 1) << L" Mbps\r\n"
+                 << L"Ethernet U/D " << FormatNumber(ethernetUploadMbps_, 1) << L" / " << FormatNumber(ethernetDownloadMbps_, 1) << L" Mbps\r\n"
+                 << L"GPU " << static_cast<int>(gpuPercent_ + 0.5) << L"% | 3D " << static_cast<int>(gpu3dPercent_ + 0.5)
+                 << L"% | Copy " << static_cast<int>(gpuCopyPercent_ + 0.5)
+                 << L"% | Decode " << static_cast<int>(gpuDecodePercent_ + 0.5)
+                 << L"% | Encode " << static_cast<int>(gpuEncodePercent_ + 0.5) << L"%";
+            break;
+
         case PerformanceView::Cpu:
         {
             std::uint64_t totalThreads = 0;
@@ -2585,23 +2717,11 @@ namespace utm::ui
 
         case PerformanceView::Memory:
         {
-            PERFORMANCE_INFORMATION perf{};
-            perf.cb = sizeof(perf);
-            GetPerformanceInfo(&perf, sizeof(perf));
-
-            const double pageSize = static_cast<double>(perf.PageSize);
-            const double commitUsedGb = (perf.CommitTotal * pageSize) / kBytesPerGiB;
-            const double commitLimitGb = (perf.CommitLimit * pageSize) / kBytesPerGiB;
-            const double cachedGb = (perf.SystemCache * pageSize) / kBytesPerGiB;
-            const double pagedPoolGb = (perf.KernelPaged * pageSize) / kBytesPerGiB;
-            const double nonPagedPoolGb = (perf.KernelNonpaged * pageSize) / kBytesPerGiB;
-            const double availableGb = (std::max)(0.0, memoryTotalGb_ - memoryUsedGb_);
-
             text << L"In use: " << FormatNumber(memoryUsedGb_, 1) << L" GB\r\n"
-                 << L"Available: " << FormatNumber(availableGb, 1) << L" GB\r\n"
-                 << L"Committed: " << FormatNumber(commitUsedGb, 1) << L" / " << FormatNumber(commitLimitGb, 1) << L" GB\r\n"
-                 << L"Cached: " << FormatNumber(cachedGb, 1) << L" GB\r\n"
-                 << L"Paged pool: " << FormatNumber(pagedPoolGb, 2) << L" GB | Non-paged pool: " << FormatNumber(nonPagedPoolGb, 2) << L" GB\r\n"
+                 << L"Available: " << FormatNumber(memoryAvailableGb_, 1) << L" GB\r\n"
+                 << L"Committed: " << FormatNumber(memoryCommittedGb_, 1) << L" / " << FormatNumber(memoryCommitLimitGb_, 1) << L" GB\r\n"
+                 << L"Utilization: " << static_cast<int>(memoryPercent_ + 0.5) << L"%\r\n"
+                 << L"Design note: top chart shows In Use memory, bottom chart shows Available memory.\r\n"
                  << L"Speed: N/A | Slots used: N/A | Form factor: N/A | Hardware reserved: N/A";
             break;
         }
@@ -2649,12 +2769,16 @@ namespace utm::ui
 
         case PerformanceView::Gpu:
             text << L"Utilization: " << static_cast<int>(gpuPercent_ + 0.5) << L"%\r\n"
-                 << L"Adapter: " << (gpuAdapterName_.empty() ? L"N/A" : gpuAdapterName_) << L"\r\n"
-                 << L"Dedicated GPU memory: " << FormatNumber(gpuDedicatedGb_, 1) << L" GB\r\n"
-                 << L"Shared GPU memory: " << FormatNumber(gpuSharedGb_, 1) << L" GB\r\n"
+                 << L"Adapters: " << (gpuAdaptersSummary_.empty() ? L"N/A" : gpuAdaptersSummary_) << L"\r\n"
+                 << L"3D: " << static_cast<int>(gpu3dPercent_ + 0.5)
+                 << L"% | Copy: " << static_cast<int>(gpuCopyPercent_ + 0.5)
+                 << L"% | Decode: " << static_cast<int>(gpuDecodePercent_ + 0.5)
+                 << L"% | Encode: " << static_cast<int>(gpuEncodePercent_ + 0.5) << L"%\r\n"
+                 << L"Dedicated memory: " << FormatNumber(gpuDedicatedUsedGb_, 1) << L" / " << FormatNumber(gpuDedicatedGb_, 1) << L" GB\r\n"
+                 << L"Shared memory: " << FormatNumber(gpuSharedUsedGb_, 1) << L" / " << FormatNumber(gpuSharedGb_, 1) << L" GB\r\n"
                  << L"Driver version/date: N/A | DirectX version: N/A\r\n"
                  << L"Physical location: " << (gpuLocation_.empty() ? L"N/A" : gpuLocation_) << L"\r\n"
-                 << L"Engines: 3D / Copy / Video Decode / Video Encode (detailed counters pending)";
+                 << L"Engines: 3D / Copy / Video Decode / Video Encode";
             break;
         }
 
@@ -2736,6 +2860,16 @@ namespace utm::ui
             }
 
             memoryPercent_ = (std::clamp)(memoryPercent_, 0.0, 100.0);
+            memoryAvailableGb_ = (std::max)(0.0, memoryTotalGb_ - memoryUsedGb_);
+        }
+
+        PERFORMANCE_INFORMATION perfInfo{};
+        perfInfo.cb = sizeof(perfInfo);
+        if (GetPerformanceInfo(&perfInfo, sizeof(perfInfo)))
+        {
+            const double pageSize = static_cast<double>(perfInfo.PageSize);
+            memoryCommittedGb_ = (perfInfo.CommitTotal * pageSize) / kBytesPerGiB;
+            memoryCommitLimitGb_ = (perfInfo.CommitLimit * pageSize) / kBytesPerGiB;
         }
 
         auto readCounterValue = [](PDH_HCOUNTER counter)
@@ -2851,31 +2985,90 @@ namespace utm::ui
 
         gpuPercent_ = QueryGpuUsagePercent();
 
+        gpuAdapterName_.clear();
+        gpuAdaptersSummary_.clear();
+        gpuLocation_.clear();
+        gpuDedicatedGb_ = 0.0;
+        gpuSharedGb_ = 0.0;
+        gpuDedicatedUsedGb_ = 0.0;
+        gpuSharedUsedGb_ = 0.0;
+
         IDXGIFactory1 *factory = nullptr;
         if (SUCCEEDED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), reinterpret_cast<void **>(&factory))))
         {
+            UINT index = 0;
             IDXGIAdapter1 *adapter = nullptr;
-            if (factory->EnumAdapters1(0, &adapter) == S_OK)
+            while (factory->EnumAdapters1(index, &adapter) == S_OK)
             {
                 DXGI_ADAPTER_DESC1 desc{};
-                if (SUCCEEDED(adapter->GetDesc1(&desc)))
+                if (SUCCEEDED(adapter->GetDesc1(&desc)) && (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) == 0)
                 {
-                    gpuAdapterName_ = desc.Description;
-                    gpuDedicatedGb_ = static_cast<double>(desc.DedicatedVideoMemory) / kBytesPerGiB;
-                    gpuSharedGb_ = static_cast<double>(desc.SharedSystemMemory) / kBytesPerGiB;
+                    const std::wstring name = desc.Description;
+                    if (!gpuAdaptersSummary_.empty())
+                    {
+                        gpuAdaptersSummary_ += L" | ";
+                    }
+                    gpuAdaptersSummary_ += name;
+
+                    if (gpuAdapterName_.empty())
+                    {
+                        gpuAdapterName_ = name;
+                    }
+
+                    gpuDedicatedGb_ += static_cast<double>(desc.DedicatedVideoMemory) / kBytesPerGiB;
+                    gpuSharedGb_ += static_cast<double>(desc.SharedSystemMemory) / kBytesPerGiB;
 
                     std::wstringstream location;
-                    location << L"LUID " << desc.AdapterLuid.HighPart << L":" << desc.AdapterLuid.LowPart;
-                    gpuLocation_ = location.str();
+                    location << L"Adapter " << index << L" LUID " << desc.AdapterLuid.HighPart << L":" << desc.AdapterLuid.LowPart;
+                    if (!gpuLocation_.empty())
+                    {
+                        gpuLocation_ += L" | ";
+                    }
+                    gpuLocation_ += location.str();
+
+                    IDXGIAdapter3 *adapter3 = nullptr;
+                    if (SUCCEEDED(adapter->QueryInterface(__uuidof(IDXGIAdapter3), reinterpret_cast<void **>(&adapter3))))
+                    {
+                        DXGI_QUERY_VIDEO_MEMORY_INFO localInfo{};
+                        if (SUCCEEDED(adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &localInfo)))
+                        {
+                            gpuDedicatedUsedGb_ += static_cast<double>(localInfo.CurrentUsage) / kBytesPerGiB;
+                        }
+
+                        DXGI_QUERY_VIDEO_MEMORY_INFO nonLocalInfo{};
+                        if (SUCCEEDED(adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL, &nonLocalInfo)))
+                        {
+                            gpuSharedUsedGb_ += static_cast<double>(nonLocalInfo.CurrentUsage) / kBytesPerGiB;
+                        }
+
+                        adapter3->Release();
+                    }
                 }
+
                 adapter->Release();
+                adapter = nullptr;
+                ++index;
             }
+
             factory->Release();
+        }
+
+        if (gpuAdaptersSummary_.empty() && !gpuAdapterName_.empty())
+        {
+            gpuAdaptersSummary_ = gpuAdapterName_;
         }
 
         PushHistory(cpuHistory_, totalCpuPercent_);
         PushHistory(memoryHistory_, memoryUsedGb_);
+        PushHistory(memoryAvailableHistory_, memoryAvailableGb_);
+        PushHistory(memoryCommittedHistory_, memoryCommittedGb_);
         PushHistory(gpuHistory_, gpuPercent_);
+        PushHistory(gpu3dHistory_, gpu3dPercent_);
+        PushHistory(gpuCopyHistory_, gpuCopyPercent_);
+        PushHistory(gpuDecodeHistory_, gpuDecodePercent_);
+        PushHistory(gpuEncodeHistory_, gpuEncodePercent_);
+        PushHistory(gpuDedicatedHistory_, gpuDedicatedUsedGb_);
+        PushHistory(gpuSharedHistory_, gpuSharedUsedGb_);
         PushHistory(uploadHistory_, uploadMbps_);
         PushHistory(downloadHistory_, downloadMbps_);
         PushHistory(wifiUploadHistory_, wifiUploadMbps_);
@@ -2906,11 +3099,14 @@ namespace utm::ui
         std::wstring title;
         switch (activePerformanceView_)
         {
+        case PerformanceView::All:
+            title = L"All Stats | Scroll to view every graph";
+            break;
         case PerformanceView::Cpu:
             title = L"CPU | Total and per-core activity";
             break;
         case PerformanceView::Memory:
-            title = L"Memory | Usage trend and allocation details";
+            title = L"Memory | In-use and available trend";
             break;
         case PerformanceView::Disk:
             title = L"Disk | Read/Write throughput and latency";
@@ -2922,7 +3118,7 @@ namespace utm::ui
             title = L"Ethernet | Upload and download throughput";
             break;
         case PerformanceView::Gpu:
-            title = L"GPU | Utilization and memory overview";
+            title = L"GPU | 3D / Copy / Decode / Encode / Dedicated / Shared";
             break;
         }
         SetWindowTextW(performancePlaceholder_, title.c_str());
@@ -2966,33 +3162,90 @@ namespace utm::ui
         switch (draw->CtlID)
         {
         case kIdPerfGraphCpu:
-            cfg.history = &cpuHistory_;
-            cfg.title = L"CPU Total";
-            cfg.unit = L"%";
-            cfg.lineColor = RGB(30, 120, 230);
-            cfg.latest = totalCpuPercent_;
-            cfg.maxValue = 100.0;
-            cfg.showPercent = true;
+            if (activePerformanceView_ == PerformanceView::Gpu)
+            {
+                cfg.history = &gpu3dHistory_;
+                cfg.title = L"GPU 3D";
+                cfg.unit = L"%";
+                cfg.lineColor = RGB(96, 118, 255);
+                cfg.latest = gpu3dPercent_;
+                cfg.maxValue = 100.0;
+                cfg.showPercent = true;
+            }
+            else
+            {
+                cfg.history = &cpuHistory_;
+                cfg.title = L"CPU Total";
+                cfg.unit = L"%";
+                cfg.lineColor = RGB(30, 120, 230);
+                cfg.latest = totalCpuPercent_;
+                cfg.maxValue = 100.0;
+                cfg.showPercent = true;
+            }
             break;
         case kIdPerfGraphMemory:
-            cfg.history = &memoryHistory_;
-            cfg.title = L"Memory";
-            cfg.unit = L"GB";
-            cfg.lineColor = RGB(16, 166, 115);
-            cfg.latest = memoryUsedGb_;
-            cfg.maxValue = (std::max)(1.0, memoryTotalGb_);
+            if (activePerformanceView_ == PerformanceView::Gpu)
+            {
+                cfg.history = &gpuCopyHistory_;
+                cfg.title = L"GPU Copy";
+                cfg.unit = L"%";
+                cfg.lineColor = RGB(53, 189, 126);
+                cfg.latest = gpuCopyPercent_;
+                cfg.maxValue = 100.0;
+                cfg.showPercent = true;
+            }
+            else
+            {
+                cfg.history = &memoryHistory_;
+                cfg.title = L"Memory In Use";
+                cfg.unit = L"GB";
+                cfg.lineColor = RGB(16, 166, 115);
+                cfg.latest = memoryUsedGb_;
+                cfg.maxValue = (std::max)(1.0, memoryTotalGb_);
+            }
             break;
         case kIdPerfGraphGpu:
-            cfg.history = &gpuHistory_;
-            cfg.title = L"GPU";
-            cfg.unit = L"%";
-            cfg.lineColor = RGB(148, 73, 224);
-            cfg.latest = gpuPercent_;
-            cfg.maxValue = 100.0;
-            cfg.showPercent = true;
+            if (activePerformanceView_ == PerformanceView::Memory)
+            {
+                cfg.history = &memoryAvailableHistory_;
+                cfg.title = L"Memory Available";
+                cfg.unit = L"GB";
+                cfg.lineColor = RGB(44, 132, 220);
+                cfg.latest = memoryAvailableGb_;
+                cfg.maxValue = (std::max)(1.0, memoryTotalGb_);
+            }
+            else if (activePerformanceView_ == PerformanceView::Gpu)
+            {
+                cfg.history = &gpuDedicatedHistory_;
+                cfg.title = L"GPU Dedicated Memory";
+                cfg.unit = L"GB";
+                cfg.lineColor = RGB(166, 81, 223);
+                cfg.latest = gpuDedicatedUsedGb_;
+                cfg.maxValue = (std::max)(0.5, gpuDedicatedGb_);
+            }
+            else
+            {
+                cfg.history = &gpuHistory_;
+                cfg.title = L"GPU";
+                cfg.unit = L"%";
+                cfg.lineColor = RGB(148, 73, 224);
+                cfg.latest = gpuPercent_;
+                cfg.maxValue = 100.0;
+                cfg.showPercent = true;
+            }
             break;
         case kIdPerfGraphUpload:
-            if (activePerformanceView_ == PerformanceView::Disk)
+            if (activePerformanceView_ == PerformanceView::Gpu)
+            {
+                cfg.history = &gpuDecodeHistory_;
+                cfg.title = L"GPU Video Decode";
+                cfg.unit = L"%";
+                cfg.lineColor = RGB(236, 150, 14);
+                cfg.latest = gpuDecodePercent_;
+                cfg.maxValue = 100.0;
+                cfg.showPercent = true;
+            }
+            else if (activePerformanceView_ == PerformanceView::Disk)
             {
                 cfg.history = &diskReadHistory_;
                 cfg.title = L"Disk Read";
@@ -3030,7 +3283,17 @@ namespace utm::ui
             }
             break;
         case kIdPerfGraphDownload:
-            if (activePerformanceView_ == PerformanceView::Disk)
+            if (activePerformanceView_ == PerformanceView::Gpu)
+            {
+                cfg.history = &gpuEncodeHistory_;
+                cfg.title = L"GPU Video Encode";
+                cfg.unit = L"%";
+                cfg.lineColor = RGB(225, 76, 88);
+                cfg.latest = gpuEncodePercent_;
+                cfg.maxValue = 100.0;
+                cfg.showPercent = true;
+            }
+            else if (activePerformanceView_ == PerformanceView::Disk)
             {
                 cfg.history = &diskWriteHistory_;
                 cfg.title = L"Disk Write";
@@ -3109,7 +3372,7 @@ namespace utm::ui
         DrawTextW(dc, cfg.title, -1, &titleRect, DT_LEFT | DT_TOP | DT_SINGLELINE);
 
         std::wstring latestLabel;
-        if (draw->CtlID == kIdPerfGraphMemory)
+        if (draw->CtlID == kIdPerfGraphMemory && activePerformanceView_ == PerformanceView::Memory)
         {
             latestLabel = FormatAxisValue(cfg.latest, cfg.unit);
             latestLabel += L" (";
@@ -3313,6 +3576,226 @@ namespace utm::ui
         SetBkMode(dc, TRANSPARENT);
         SetTextColor(dc, RGB(30, 46, 70));
 
+        auto drawCardChart = [&](const RECT &card,
+                                 const std::wstring &title,
+                                 const std::deque<double> &history,
+                                 double latest,
+                                 double maxValue,
+                                 COLORREF lineColor,
+                                 const wchar_t *unit,
+                                 bool showPercent)
+        {
+            HBRUSH tileBrush = CreateSolidBrush(RGB(248, 251, 255));
+            FillRect(dc, &card, tileBrush);
+            DeleteObject(tileBrush);
+
+            HPEN tileBorder = CreatePen(PS_SOLID, 1, RGB(216, 225, 239));
+            HPEN pen = reinterpret_cast<HPEN>(SelectObject(dc, tileBorder));
+            HBRUSH brush = reinterpret_cast<HBRUSH>(SelectObject(dc, GetStockObject(NULL_BRUSH)));
+            Rectangle(dc, card.left, card.top, card.right, card.bottom);
+            SelectObject(dc, brush);
+            SelectObject(dc, pen);
+            DeleteObject(tileBorder);
+
+            RECT titleRect = card;
+            titleRect.left += 8;
+            titleRect.top += 5;
+            DrawTextW(dc, title.c_str(), -1, &titleRect, DT_LEFT | DT_TOP | DT_SINGLELINE);
+
+            std::wstring valueText;
+            if (showPercent)
+            {
+                valueText = std::to_wstring(static_cast<int>(latest + 0.5));
+                valueText += L"%";
+            }
+            else
+            {
+                valueText = FormatAxisValue(latest, unit);
+            }
+
+            RECT valueRect = card;
+            valueRect.right -= 8;
+            valueRect.top += 5;
+            DrawTextW(dc, valueText.c_str(), -1, &valueRect, DT_RIGHT | DT_TOP | DT_SINGLELINE);
+
+            RECT plot = card;
+            plot.left += 8;
+            plot.right -= 8;
+            plot.top += 24;
+            plot.bottom -= 8;
+
+            const int plotWidth = (std::max)(1, static_cast<int>(plot.right - plot.left));
+            const int plotHeight = (std::max)(1, static_cast<int>(plot.bottom - plot.top));
+            const double safeMax = (std::max)(0.001, maxValue);
+
+            HPEN gridPen = CreatePen(PS_SOLID, 1, RGB(227, 233, 244));
+            pen = reinterpret_cast<HPEN>(SelectObject(dc, gridPen));
+            for (int line = 1; line <= 3; ++line)
+            {
+                const int y = plot.top + (plotHeight * line) / 4;
+                MoveToEx(dc, plot.left, y, nullptr);
+                LineTo(dc, plot.right, y);
+            }
+            SelectObject(dc, pen);
+            DeleteObject(gridPen);
+
+            if (history.size() >= 2)
+            {
+                std::vector<POINT> points;
+                const int n = static_cast<int>(history.size());
+                points.reserve(n);
+                for (int i = 0; i < n; ++i)
+                {
+                    const double sample = (std::clamp)(history[i], 0.0, safeMax);
+                    const int x = plot.left + ((plotWidth - 1) * i) / (n - 1);
+                    const int y = plot.bottom - static_cast<int>((sample / safeMax) * (plotHeight - 1));
+                    points.push_back(POINT{x, y});
+                }
+
+                std::vector<POINT> area;
+                area.reserve(points.size() + 2);
+                area.push_back(POINT{points.front().x, plot.bottom});
+                area.insert(area.end(), points.begin(), points.end());
+                area.push_back(POINT{points.back().x, plot.bottom});
+
+                HBRUSH areaBrush = CreateSolidBrush(BlendColor(lineColor, RGB(255, 255, 255), 0.82));
+                HBRUSH prevBrush = reinterpret_cast<HBRUSH>(SelectObject(dc, areaBrush));
+                HPEN nullPen = reinterpret_cast<HPEN>(SelectObject(dc, GetStockObject(NULL_PEN)));
+                Polygon(dc, area.data(), static_cast<int>(area.size()));
+                SelectObject(dc, nullPen);
+                SelectObject(dc, prevBrush);
+                DeleteObject(areaBrush);
+
+                HPEN linePen = CreatePen(PS_SOLID, 1, lineColor);
+                HPEN prevPen = reinterpret_cast<HPEN>(SelectObject(dc, linePen));
+                MoveToEx(dc, points.front().x, points.front().y, nullptr);
+                for (size_t i = 1; i < points.size(); ++i)
+                {
+                    LineTo(dc, points[i].x, points[i].y);
+                }
+                SelectObject(dc, prevPen);
+                DeleteObject(linePen);
+            }
+        };
+
+        if (activePerformanceView_ == PerformanceView::Gpu)
+        {
+            RECT card = local;
+            card.left += 8;
+            card.right -= 8;
+            card.top += 8;
+            card.bottom -= 8;
+
+            drawCardChart(
+                card,
+                L"GPU Shared Memory",
+                gpuSharedHistory_,
+                gpuSharedUsedGb_,
+                (std::max)(0.5, gpuSharedGb_),
+                RGB(52, 144, 236),
+                L"GB",
+                false);
+
+            BitBlt(targetDc, rc.left, rc.top, width, height, dc, 0, 0, SRCCOPY);
+            SelectObject(dc, oldBitmap);
+            DeleteObject(bitmap);
+            DeleteDC(dc);
+            return;
+        }
+
+        if (activePerformanceView_ == PerformanceView::All)
+        {
+            RECT titleRect = local;
+            titleRect.left += 10;
+            titleRect.top += 5;
+            DrawTextW(dc, L"All Graphs (scroll with mouse wheel)", -1, &titleRect, DT_LEFT | DT_TOP | DT_SINGLELINE);
+
+            struct CardItem
+            {
+                std::wstring title;
+                const std::deque<double> *history;
+                double latest;
+                double maxValue;
+                COLORREF color;
+                const wchar_t *unit;
+                bool percent;
+            };
+
+            std::vector<CardItem> cards = {
+                {L"CPU Total", &cpuHistory_, totalCpuPercent_, 100.0, RGB(30, 120, 230), L"%", true},
+                {L"Memory In Use", &memoryHistory_, memoryUsedGb_, (std::max)(1.0, memoryTotalGb_), RGB(16, 166, 115), L"GB", false},
+                {L"Memory Available", &memoryAvailableHistory_, memoryAvailableGb_, (std::max)(1.0, memoryTotalGb_), RGB(44, 132, 220), L"GB", false},
+                {L"Disk Read", &diskReadHistory_, diskReadMBps_, (std::max)(1.0, diskReadScaleMBps_), RGB(27, 145, 102), L"MB/s", false},
+                {L"Disk Write", &diskWriteHistory_, diskWriteMBps_, (std::max)(1.0, diskWriteScaleMBps_), RGB(208, 73, 86), L"MB/s", false},
+                {L"Wi-Fi Upload", &wifiUploadHistory_, wifiUploadMbps_, (std::max)(0.5, wifiUploadScaleMbps_), RGB(236, 150, 14), L"Mbps", false},
+                {L"Wi-Fi Download", &wifiDownloadHistory_, wifiDownloadMbps_, (std::max)(0.5, wifiDownloadScaleMbps_), RGB(225, 76, 88), L"Mbps", false},
+                {L"Ethernet Upload", &ethernetUploadHistory_, ethernetUploadMbps_, (std::max)(0.5, ethernetUploadScaleMbps_), RGB(236, 150, 14), L"Mbps", false},
+                {L"Ethernet Download", &ethernetDownloadHistory_, ethernetDownloadMbps_, (std::max)(0.5, ethernetDownloadScaleMbps_), RGB(225, 76, 88), L"Mbps", false},
+                {L"GPU 3D", &gpu3dHistory_, gpu3dPercent_, 100.0, RGB(96, 118, 255), L"%", true},
+                {L"GPU Copy", &gpuCopyHistory_, gpuCopyPercent_, 100.0, RGB(53, 189, 126), L"%", true},
+                {L"GPU Decode", &gpuDecodeHistory_, gpuDecodePercent_, 100.0, RGB(236, 150, 14), L"%", true},
+                {L"GPU Encode", &gpuEncodeHistory_, gpuEncodePercent_, 100.0, RGB(225, 76, 88), L"%", true},
+                {L"GPU Dedicated", &gpuDedicatedHistory_, gpuDedicatedUsedGb_, (std::max)(0.5, gpuDedicatedGb_), RGB(166, 81, 223), L"GB", false},
+                {L"GPU Shared", &gpuSharedHistory_, gpuSharedUsedGb_, (std::max)(0.5, gpuSharedGb_), RGB(52, 144, 236), L"GB", false}};
+
+            const int topMargin = 30;
+            const int bottomMargin = 8;
+            const int gap = 10;
+            const int cols = 2;
+            const int cardWidth = (std::max)(100, (width - 16 - gap) / cols);
+            const int cardHeight = 132;
+            const int rows = static_cast<int>((cards.size() + cols - 1) / cols);
+            const int contentHeight = rows * (cardHeight + gap) - gap + topMargin + bottomMargin;
+            const int viewportHeight = (std::max)(1, height - topMargin - bottomMargin);
+            const int maxOffset = (std::max)(0, contentHeight - viewportHeight);
+
+            int scrollOffset = (std::clamp)(perfAllScrollOffset_, 0, maxOffset);
+            const_cast<MainWindow *>(this)->perfAllScrollOffset_ = scrollOffset;
+            const_cast<MainWindow *>(this)->perfAllContentHeight_ = contentHeight;
+
+            for (size_t i = 0; i < cards.size(); ++i)
+            {
+                const int row = static_cast<int>(i / cols);
+                const int col = static_cast<int>(i % cols);
+
+                RECT card{
+                    8 + col * (cardWidth + gap),
+                    topMargin + row * (cardHeight + gap) - scrollOffset,
+                    8 + col * (cardWidth + gap) + cardWidth,
+                    topMargin + row * (cardHeight + gap) - scrollOffset + cardHeight};
+
+                if (card.bottom < topMargin || card.top > height - bottomMargin)
+                {
+                    continue;
+                }
+
+                drawCardChart(card, cards[i].title, *cards[i].history, cards[i].latest, cards[i].maxValue, cards[i].color, cards[i].unit, cards[i].percent);
+            }
+
+            if (maxOffset > 0)
+            {
+                RECT scrollTrack{width - 5, topMargin, width - 3, height - bottomMargin};
+                HBRUSH trackBrush = CreateSolidBrush(RGB(228, 235, 245));
+                FillRect(dc, &scrollTrack, trackBrush);
+                DeleteObject(trackBrush);
+
+                const int trackHeight = (std::max)(1, static_cast<int>(scrollTrack.bottom - scrollTrack.top));
+                const int thumbHeight = (std::max)(20, (trackHeight * viewportHeight) / (std::max)(viewportHeight, contentHeight));
+                const int thumbTop = scrollTrack.top + ((trackHeight - thumbHeight) * scrollOffset) / (std::max)(1, maxOffset);
+
+                RECT thumb{scrollTrack.left, thumbTop, scrollTrack.right, thumbTop + thumbHeight};
+                HBRUSH thumbBrush = CreateSolidBrush(RGB(155, 170, 196));
+                FillRect(dc, &thumb, thumbBrush);
+                DeleteObject(thumbBrush);
+            }
+
+            BitBlt(targetDc, rc.left, rc.top, width, height, dc, 0, 0, SRCCOPY);
+            SelectObject(dc, oldBitmap);
+            DeleteObject(bitmap);
+            DeleteDC(dc);
+            return;
+        }
+
         RECT titleRect = local;
         titleRect.left += 10;
         titleRect.top += 5;
@@ -3344,7 +3827,7 @@ namespace utm::ui
         const int gridWidth = (std::max)(1, static_cast<int>(grid.right - grid.left));
         const int gridHeight = (std::max)(1, static_cast<int>(grid.bottom - grid.top));
 
-        int columns = (std::max)(1, gridWidth / 130);
+        int columns = (std::max)(1, gridWidth / 110);
         columns = (std::min)(columns, static_cast<int>(coreCount));
         int rows = static_cast<int>((coreCount + static_cast<size_t>(columns) - 1) / static_cast<size_t>(columns));
 
@@ -3374,7 +3857,7 @@ namespace utm::ui
         }
 
         const int tileWidth = (std::max)(90, (std::min)(180, (gridWidth - gap * (columns - 1)) / columns));
-        const int tileHeight = (std::max)(44, (std::min)(72, (gridHeight - gap * (rows - 1)) / rows));
+        const int tileHeight = (std::max)(42, (std::min)(58, (gridHeight - gap * (rows - 1)) / rows));
 
         constexpr COLORREF kCorePalette[] = {
             RGB(68, 128, 245), RGB(25, 173, 123), RGB(130, 102, 246), RGB(229, 140, 28),
