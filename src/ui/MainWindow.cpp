@@ -1,16 +1,26 @@
-﻿#include "ui/MainWindow.h"
+﻿#include <winsock2.h>
+
+#include "ui/MainWindow.h"
 
 #include "tools/process/ProcessActions.h"
 #include "util/logging/Logger.h"
 
 #include <commctrl.h>
+#include <commdlg.h>
+#include <iphlpapi.h>
+#include <shlobj.h>
 #include <strsafe.h>
 #include <uxtheme.h>
 #include <windowsx.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <cwctype>
+#include <filesystem>
+#include <set>
 #include <sstream>
+#include <unordered_map>
+#include <vector>
 
 #pragma comment(lib, "Comctl32.lib")
 #pragma comment(lib, "UxTheme.lib")
@@ -34,7 +44,10 @@ namespace
     constexpr int kIdNavPerformance = 1011;
     constexpr int kIdNavNetwork = 1012;
     constexpr int kIdNavHardware = 1013;
-    constexpr int kIdNavQuickTools = 1014;
+    constexpr int kIdNavServices = 1014;
+    constexpr int kIdNavStartupApps = 1015;
+    constexpr int kIdNavUsers = 1016;
+    constexpr int kIdNavQuickTools = 1017;
 
     constexpr int kIdSectionTitle = 1020;
     constexpr int kIdFilterLabel = 1021;
@@ -44,11 +57,25 @@ namespace
     constexpr int kIdPerfPlaceholder = 1025;
     constexpr int kIdNetworkPlaceholder = 1026;
     constexpr int kIdHardwarePlaceholder = 1027;
-    constexpr int kIdQuickToolsTitle = 1028;
-    constexpr int kIdQuickToolsHint = 1029;
-    constexpr int kIdQuickToolPort = 41000;
-    constexpr int kIdQuickToolPattern = 41001;
+    constexpr int kIdServicesPlaceholder = 1028;
+    constexpr int kIdStartupAppsPlaceholder = 1029;
+    constexpr int kIdUsersPlaceholder = 1030;
+    constexpr int kIdQuickToolsTitle = 1031;
+    constexpr int kIdQuickToolsHint = 1032;
+    constexpr int kIdQuickPortLabel = 1033;
+    constexpr int kIdQuickPortEdit = 1034;
+    constexpr int kIdQuickProcessLabel = 1035;
+    constexpr int kIdQuickProcessEdit = 1036;
+    constexpr int kIdQuickDeleteLabel = 1037;
+    constexpr int kIdQuickDeletePathEdit = 1038;
+
+    constexpr int kIdQuickToolPortKillAll = 41000;
+    constexpr int kIdQuickToolProcessKillAll = 41001;
     constexpr int kIdQuickToolSmartDelete = 41002;
+    constexpr int kIdQuickToolPortKillOneByOne = 41003;
+    constexpr int kIdQuickToolProcessKillOneByOne = 41004;
+    constexpr int kIdQuickToolBrowseFile = 41005;
+    constexpr int kIdQuickToolBrowseFolder = 41006;
 
     constexpr UINT kCommandEndTask = 40001;
     constexpr UINT kCommandEndTree = 40002;
@@ -134,6 +161,242 @@ namespace
         }
 
         return out.str();
+    }
+
+    std::uint16_t LocalPortFromRow(DWORD netOrderPort)
+    {
+        const std::uint16_t p = static_cast<std::uint16_t>(netOrderPort & 0xFFFF);
+        return static_cast<std::uint16_t>((p >> 8) | (p << 8));
+    }
+
+    std::set<DWORD> PidsUsingPort(std::uint16_t port)
+    {
+        std::set<DWORD> pids;
+
+        ULONG size = 0;
+        if (GetExtendedTcpTable(nullptr, &size, TRUE, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0) == ERROR_INSUFFICIENT_BUFFER)
+        {
+            std::vector<std::uint8_t> buffer(size);
+            if (GetExtendedTcpTable(buffer.data(), &size, TRUE, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0) == NO_ERROR)
+            {
+                const auto *table = reinterpret_cast<const MIB_TCPTABLE_OWNER_PID *>(buffer.data());
+                for (DWORD i = 0; i < table->dwNumEntries; ++i)
+                {
+                    const auto &row = table->table[i];
+                    if (LocalPortFromRow(row.dwLocalPort) == port)
+                    {
+                        pids.insert(row.dwOwningPid);
+                    }
+                }
+            }
+        }
+
+        size = 0;
+        if (GetExtendedUdpTable(nullptr, &size, TRUE, AF_INET, UDP_TABLE_OWNER_PID, 0) == ERROR_INSUFFICIENT_BUFFER)
+        {
+            std::vector<std::uint8_t> buffer(size);
+            if (GetExtendedUdpTable(buffer.data(), &size, TRUE, AF_INET, UDP_TABLE_OWNER_PID, 0) == NO_ERROR)
+            {
+                const auto *table = reinterpret_cast<const MIB_UDPTABLE_OWNER_PID *>(buffer.data());
+                for (DWORD i = 0; i < table->dwNumEntries; ++i)
+                {
+                    const auto &row = table->table[i];
+                    if (LocalPortFromRow(row.dwLocalPort) == port)
+                    {
+                        pids.insert(row.dwOwningPid);
+                    }
+                }
+            }
+        }
+
+        pids.erase(0);
+        pids.erase(4);
+        pids.erase(GetCurrentProcessId());
+        return pids;
+    }
+
+    bool KillPidList(const std::set<DWORD> &pids, int timeoutMs, int &successCount, int &failureCount, std::wstring &lastError)
+    {
+        successCount = 0;
+        failureCount = 0;
+        lastError.clear();
+
+        for (const DWORD pid : pids)
+        {
+            std::wstring error;
+            if (utm::tools::process::ProcessActions::SmartTerminate(pid, timeoutMs, error))
+            {
+                ++successCount;
+            }
+            else
+            {
+                ++failureCount;
+                if (!error.empty())
+                {
+                    lastError = error;
+                }
+            }
+        }
+
+        return failureCount == 0;
+    }
+
+    std::set<DWORD> PidsMatchingPattern(const utm::core::model::SystemSnapshot &snapshot, const std::wstring &pattern)
+    {
+        std::set<DWORD> pids;
+        const std::wstring loweredPattern = ToLower(pattern);
+        if (loweredPattern.empty())
+        {
+            return pids;
+        }
+
+        for (const auto &item : snapshot.processes)
+        {
+            const std::wstring loweredName = ToLower(item.imageName);
+            if (loweredName.find(loweredPattern) != std::wstring::npos)
+            {
+                pids.insert(item.pid);
+            }
+        }
+
+        pids.erase(0);
+        pids.erase(4);
+        pids.erase(GetCurrentProcessId());
+        return pids;
+    }
+
+    std::vector<std::wstring> SplitTokens(const std::wstring &text)
+    {
+        std::vector<std::wstring> out;
+        std::wstring current;
+
+        const auto flush = [&]()
+        {
+            if (!current.empty())
+            {
+                out.push_back(current);
+                current.clear();
+            }
+        };
+
+        for (const wchar_t ch : text)
+        {
+            if (ch == L' ' || ch == L'\t' || ch == L'\r' || ch == L'\n' || ch == L',' || ch == L';')
+            {
+                flush();
+            }
+            else
+            {
+                current.push_back(ch);
+            }
+        }
+
+        flush();
+        return out;
+    }
+
+    std::vector<std::uint16_t> ParsePorts(const std::wstring &input)
+    {
+        std::vector<std::uint16_t> ports;
+        std::set<std::uint16_t> dedup;
+
+        for (const auto &token : SplitTokens(input))
+        {
+            bool numeric = !token.empty();
+            for (const wchar_t ch : token)
+            {
+                if (ch < L'0' || ch > L'9')
+                {
+                    numeric = false;
+                    break;
+                }
+            }
+
+            if (!numeric)
+            {
+                continue;
+            }
+
+            const unsigned long value = std::wcstoul(token.c_str(), nullptr, 10);
+            if (value == 0 || value > 65535)
+            {
+                continue;
+            }
+
+            const auto p = static_cast<std::uint16_t>(value);
+            if (dedup.insert(p).second)
+            {
+                ports.push_back(p);
+            }
+        }
+
+        return ports;
+    }
+
+    std::wstring PidLabel(const utm::core::model::SystemSnapshot &snapshot, DWORD pid)
+    {
+        for (const auto &p : snapshot.processes)
+        {
+            if (p.pid == pid)
+            {
+                std::wstring label = p.imageName;
+                label += L" (PID ";
+                label += std::to_wstring(pid);
+                label += L")";
+                return label;
+            }
+        }
+
+        std::wstring fallback = L"PID ";
+        fallback += std::to_wstring(pid);
+        return fallback;
+    }
+
+    bool BrowseForFile(HWND owner, std::wstring &outPath)
+    {
+        wchar_t filePath[MAX_PATH]{};
+        OPENFILENAMEW ofn{};
+        ofn.lStructSize = sizeof(ofn);
+        ofn.hwndOwner = owner;
+        ofn.lpstrFilter = L"All Files\0*.*\0";
+        ofn.lpstrFile = filePath;
+        ofn.nMaxFile = MAX_PATH;
+        ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+        ofn.lpstrTitle = L"Select File To Force Delete";
+
+        if (!GetOpenFileNameW(&ofn))
+        {
+            return false;
+        }
+
+        outPath = filePath;
+        return true;
+    }
+
+    bool BrowseForFolder(HWND owner, std::wstring &outPath)
+    {
+        BROWSEINFOW bi{};
+        bi.hwndOwner = owner;
+        bi.lpszTitle = L"Select Folder To Force Delete";
+        bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_USENEWUI;
+
+        LPITEMIDLIST pidl = SHBrowseForFolderW(&bi);
+        if (!pidl)
+        {
+            return false;
+        }
+
+        wchar_t selected[MAX_PATH]{};
+        const bool ok = SHGetPathFromIDListW(pidl, selected) == TRUE;
+        CoTaskMemFree(pidl);
+
+        if (!ok)
+        {
+            return false;
+        }
+
+        outPath = selected;
+        return true;
     }
 
 } // namespace
@@ -410,6 +673,24 @@ namespace utm::ui
                 return 0;
             }
 
+            if (id == kIdNavServices)
+            {
+                SetActiveSection(Section::Services);
+                return 0;
+            }
+
+            if (id == kIdNavStartupApps)
+            {
+                SetActiveSection(Section::StartupApps);
+                return 0;
+            }
+
+            if (id == kIdNavUsers)
+            {
+                SetActiveSection(Section::Users);
+                return 0;
+            }
+
             if (id == kIdNavQuickTools)
             {
                 SetActiveSection(Section::QuickKillTools);
@@ -432,21 +713,266 @@ namespace utm::ui
                 return 0;
             }
 
-            if (id == kIdQuickToolPort)
+            if (id == kIdQuickToolPortKillAll || id == kIdQuickToolPortKillOneByOne)
             {
-                MessageBoxW(hwnd_, L"Port-based killer module is scheduled for the next implementation phase.", L"Quick Kill Tools", MB_OK | MB_ICONINFORMATION);
+                wchar_t input[512]{};
+                GetWindowTextW(quickPortEdit_, input, static_cast<int>(std::size(input)));
+                const auto ports = ParsePorts(input);
+                if (ports.empty())
+                {
+                    MessageBoxW(hwnd_, L"Enter one or more ports (examples: 5000 3000 3690 6699).", L"Port Killer", MB_OK | MB_ICONINFORMATION);
+                    return 0;
+                }
+
+                std::unordered_map<DWORD, std::wstring> reasonsByPid;
+                std::set<DWORD> orderedPids;
+
+                for (const auto port : ports)
+                {
+                    const auto pids = PidsUsingPort(port);
+                    for (const auto pid : pids)
+                    {
+                        orderedPids.insert(pid);
+                        auto &reason = reasonsByPid[pid];
+                        if (!reason.empty())
+                        {
+                            reason += L", ";
+                        }
+                        reason += L"port ";
+                        reason += std::to_wstring(port);
+                    }
+                }
+
+                if (orderedPids.empty())
+                {
+                    MessageBoxW(hwnd_, L"No process currently uses the entered port(s).", L"Port Killer", MB_OK | MB_ICONINFORMATION);
+                    return 0;
+                }
+
+                int killed = 0;
+                int failed = 0;
+                int skipped = 0;
+                std::wstring lastError;
+
+                if (id == kIdQuickToolPortKillOneByOne)
+                {
+                    for (const auto pid : orderedPids)
+                    {
+                        std::wstring prompt = L"Kill this process?\n\n";
+                        prompt += PidLabel(snapshot_, pid);
+                        prompt += L"\nUsing: ";
+                        prompt += reasonsByPid[pid];
+                        prompt += L"\n\nYes = kill, No = skip, Cancel = stop.";
+
+                        const int decision = MessageBoxW(hwnd_, prompt.c_str(), L"Port Killer (One By One)", MB_ICONQUESTION | MB_YESNOCANCEL);
+                        if (decision == IDCANCEL)
+                        {
+                            break;
+                        }
+                        if (decision == IDNO)
+                        {
+                            ++skipped;
+                            continue;
+                        }
+
+                        std::wstring error;
+                        if (tools::process::ProcessActions::SmartTerminate(pid, 1500, error))
+                        {
+                            ++killed;
+                        }
+                        else
+                        {
+                            ++failed;
+                            if (!error.empty())
+                            {
+                                lastError = error;
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    int success = 0;
+                    int failures = 0;
+                    KillPidList(orderedPids, 1500, success, failures, lastError);
+                    killed = success;
+                    failed = failures;
+                }
+
+                std::wstring result = L"Port killer summary\n\nKilled: ";
+                result += std::to_wstring(killed);
+                result += L"\nSkipped: ";
+                result += std::to_wstring(skipped);
+                result += L"\nFailed: ";
+                result += std::to_wstring(failed);
+                if (!lastError.empty())
+                {
+                    result += L"\n\nLast error: ";
+                    result += lastError;
+                }
+
+                MessageBoxW(hwnd_, result.c_str(), L"Port Killer", failed > 0 ? MB_OK | MB_ICONWARNING : MB_OK | MB_ICONINFORMATION);
                 return 0;
             }
 
-            if (id == kIdQuickToolPattern)
+            if (id == kIdQuickToolProcessKillAll || id == kIdQuickToolProcessKillOneByOne)
             {
-                MessageBoxW(hwnd_, L"Pattern process killer module is scheduled for the next implementation phase.", L"Quick Kill Tools", MB_OK | MB_ICONINFORMATION);
+                wchar_t input[512]{};
+                GetWindowTextW(quickProcessEdit_, input, static_cast<int>(std::size(input)));
+                const auto tokens = SplitTokens(input);
+                if (tokens.empty())
+                {
+                    MessageBoxW(hwnd_, L"Enter one or more process patterns (examples: node ollama chrome).", L"Process Killer", MB_OK | MB_ICONINFORMATION);
+                    return 0;
+                }
+
+                std::unordered_map<DWORD, std::wstring> reasonsByPid;
+                std::set<DWORD> orderedPids;
+
+                for (const auto &token : tokens)
+                {
+                    const auto matches = PidsMatchingPattern(snapshot_, token);
+                    for (const auto pid : matches)
+                    {
+                        orderedPids.insert(pid);
+                        auto &reason = reasonsByPid[pid];
+                        if (!reason.empty())
+                        {
+                            reason += L", ";
+                        }
+                        reason += token;
+                    }
+                }
+
+                if (orderedPids.empty())
+                {
+                    MessageBoxW(hwnd_, L"No running process matches the entered pattern(s).", L"Process Killer", MB_OK | MB_ICONINFORMATION);
+                    return 0;
+                }
+
+                int killed = 0;
+                int failed = 0;
+                int skipped = 0;
+                std::wstring lastError;
+
+                if (id == kIdQuickToolProcessKillOneByOne)
+                {
+                    for (const auto pid : orderedPids)
+                    {
+                        std::wstring prompt = L"Kill this process?\n\n";
+                        prompt += PidLabel(snapshot_, pid);
+                        prompt += L"\nMatched: ";
+                        prompt += reasonsByPid[pid];
+                        prompt += L"\n\nYes = kill, No = skip, Cancel = stop.";
+
+                        const int decision = MessageBoxW(hwnd_, prompt.c_str(), L"Process Killer (One By One)", MB_ICONQUESTION | MB_YESNOCANCEL);
+                        if (decision == IDCANCEL)
+                        {
+                            break;
+                        }
+                        if (decision == IDNO)
+                        {
+                            ++skipped;
+                            continue;
+                        }
+
+                        std::wstring error;
+                        if (tools::process::ProcessActions::SmartTerminate(pid, 1500, error))
+                        {
+                            ++killed;
+                        }
+                        else
+                        {
+                            ++failed;
+                            if (!error.empty())
+                            {
+                                lastError = error;
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    int success = 0;
+                    int failures = 0;
+                    KillPidList(orderedPids, 1500, success, failures, lastError);
+                    killed = success;
+                    failed = failures;
+                }
+
+                std::wstring result = L"Process killer summary\n\nKilled: ";
+                result += std::to_wstring(killed);
+                result += L"\nSkipped: ";
+                result += std::to_wstring(skipped);
+                result += L"\nFailed: ";
+                result += std::to_wstring(failed);
+                if (!lastError.empty())
+                {
+                    result += L"\n\nLast error: ";
+                    result += lastError;
+                }
+
+                MessageBoxW(hwnd_, result.c_str(), L"Process Killer", failed > 0 ? MB_OK | MB_ICONWARNING : MB_OK | MB_ICONINFORMATION);
+                return 0;
+            }
+
+            if (id == kIdQuickToolBrowseFile)
+            {
+                std::wstring path;
+                if (BrowseForFile(hwnd_, path))
+                {
+                    quickDeleteTargetPath_ = path;
+                    quickDeleteTargetIsDirectory_ = false;
+                    SetWindowTextW(quickDeletePathEdit_, quickDeleteTargetPath_.c_str());
+                }
+                return 0;
+            }
+
+            if (id == kIdQuickToolBrowseFolder)
+            {
+                std::wstring path;
+                if (BrowseForFolder(hwnd_, path))
+                {
+                    quickDeleteTargetPath_ = path;
+                    quickDeleteTargetIsDirectory_ = true;
+                    SetWindowTextW(quickDeletePathEdit_, quickDeleteTargetPath_.c_str());
+                }
                 return 0;
             }
 
             if (id == kIdQuickToolSmartDelete)
             {
-                MessageBoxW(hwnd_, L"Smart Delete++ module is scheduled for the next implementation phase.", L"Quick Kill Tools", MB_OK | MB_ICONINFORMATION);
+                if (quickDeleteTargetPath_.empty())
+                {
+                    MessageBoxW(hwnd_, L"Select a file or folder first.", L"Force Delete", MB_OK | MB_ICONINFORMATION);
+                    return 0;
+                }
+
+                std::wstring error;
+                bool isDirectory = quickDeleteTargetIsDirectory_;
+                if (!isDirectory)
+                {
+                    std::error_code ec;
+                    isDirectory = std::filesystem::is_directory(std::filesystem::path(quickDeleteTargetPath_), ec);
+                }
+                if (tools::process::ProcessActions::ForceDeletePath(quickDeleteTargetPath_, isDirectory, error))
+                {
+                    std::wstring msg = L"Deleted successfully:\n";
+                    msg += quickDeleteTargetPath_;
+                    MessageBoxW(hwnd_, msg.c_str(), L"Force Delete", MB_OK | MB_ICONINFORMATION);
+
+                    quickDeleteTargetPath_.clear();
+                    quickDeleteTargetIsDirectory_ = false;
+                    SetWindowTextW(quickDeletePathEdit_, L"");
+                }
+                else
+                {
+                    if (error.empty())
+                    {
+                        error = L"Force delete failed.";
+                    }
+                    MessageBoxW(hwnd_, error.c_str(), L"Force Delete", MB_OK | MB_ICONERROR);
+                }
                 return 0;
             }
 
@@ -473,7 +999,13 @@ namespace utm::ui
                 return reinterpret_cast<LRESULT>(backgroundBrush_);
             }
 
-            if (control == quickToolsHint_ || control == performancePlaceholder_ || control == networkPlaceholder_ || control == hardwarePlaceholder_)
+            if (control == quickToolsHint_ ||
+                control == performancePlaceholder_ ||
+                control == networkPlaceholder_ ||
+                control == hardwarePlaceholder_ ||
+                control == servicesPlaceholder_ ||
+                control == startupAppsPlaceholder_ ||
+                control == usersPlaceholder_)
             {
                 SetBkColor(dc, kMainBackgroundColor);
                 SetTextColor(dc, RGB(76, 92, 118));
@@ -485,6 +1017,14 @@ namespace utm::ui
                 SetBkColor(dc, kMainBackgroundColor);
                 SetTextColor(dc, RGB(86, 100, 122));
                 return reinterpret_cast<LRESULT>(backgroundBrush_);
+            }
+
+            if (control == quickDeletePathEdit_)
+            {
+                SetBkMode(dc, OPAQUE);
+                SetBkColor(dc, kCardColor);
+                SetTextColor(dc, RGB(28, 41, 63));
+                return reinterpret_cast<LRESULT>(cardBrush_);
             }
 
             SetBkColor(dc, kMainBackgroundColor);
@@ -504,7 +1044,14 @@ namespace utm::ui
         {
             HDC dc = reinterpret_cast<HDC>(wParam);
             HWND control = reinterpret_cast<HWND>(lParam);
-            if (GetParent(control) == sidebar_)
+            if (control == navProcesses_ ||
+                control == navPerformance_ ||
+                control == navNetwork_ ||
+                control == navHardware_ ||
+                control == navServices_ ||
+                control == navStartupApps_ ||
+                control == navUsers_ ||
+                control == navQuickTools_)
             {
                 SetBkColor(dc, kSidebarBackgroundColor);
                 SetTextColor(dc, RGB(32, 48, 76));
@@ -594,7 +1141,7 @@ namespace utm::ui
                 0,
                 0,
                 0,
-                sidebar_,
+                hwnd_,
                 MenuId(id),
                 instance_,
                 nullptr);
@@ -604,6 +1151,9 @@ namespace utm::ui
         navPerformance_ = createNavButton(kIdNavPerformance, L"Performance", 0);
         navNetwork_ = createNavButton(kIdNavNetwork, L"Network", 0);
         navHardware_ = createNavButton(kIdNavHardware, L"Hardware", 0);
+        navServices_ = createNavButton(kIdNavServices, L"Services", 0);
+        navStartupApps_ = createNavButton(kIdNavStartupApps, L"Startup Apps", 0);
+        navUsers_ = createNavButton(kIdNavUsers, L"Users", 0);
         navQuickTools_ = createNavButton(kIdNavQuickTools, L"Quick Kill Tools", 0);
 
         sectionTitle_ = CreateWindowExW(
@@ -741,6 +1291,48 @@ namespace utm::ui
             instance_,
             nullptr);
 
+        servicesPlaceholder_ = CreateWindowExW(
+            0,
+            L"STATIC",
+            L"Services view is wired into navigation.\r\n\r\nNext phase: list all services with state, startup type, and control actions.",
+            WS_CHILD,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdServicesPlaceholder),
+            instance_,
+            nullptr);
+
+        startupAppsPlaceholder_ = CreateWindowExW(
+            0,
+            L"STATIC",
+            L"Startup Apps view is wired into navigation.\r\n\r\nNext phase: per-app startup impact and enable/disable actions.",
+            WS_CHILD,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdStartupAppsPlaceholder),
+            instance_,
+            nullptr);
+
+        usersPlaceholder_ = CreateWindowExW(
+            0,
+            L"STATIC",
+            L"Users view is wired into navigation.\r\n\r\nNext phase: per-user CPU, memory, and process usage summary.",
+            WS_CHILD,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdUsersPlaceholder),
+            instance_,
+            nullptr);
+
         quickToolsTitle_ = CreateWindowExW(
             0,
             L"STATIC",
@@ -758,7 +1350,7 @@ namespace utm::ui
         quickToolsHint_ = CreateWindowExW(
             0,
             L"STATIC",
-            L"Use these tools for targeted process cleanup workflows.",
+            L"Enter targets, then choose kill all or one-by-one confirmation mode.",
             WS_CHILD,
             0,
             0,
@@ -769,38 +1361,178 @@ namespace utm::ui
             instance_,
             nullptr);
 
+        quickPortLabel_ = CreateWindowExW(
+            0,
+            L"STATIC",
+            L"Ports (e.g. 5000 3000 3690 6699)",
+            WS_CHILD,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdQuickPortLabel),
+            instance_,
+            nullptr);
+
+        quickPortEdit_ = CreateWindowExW(
+            WS_EX_CLIENTEDGE,
+            L"EDIT",
+            nullptr,
+            WS_CHILD | ES_AUTOHSCROLL,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdQuickPortEdit),
+            instance_,
+            nullptr);
+
         quickKillPortButton_ = CreateWindowExW(
             0,
             L"BUTTON",
-            L"Port-Based Killer",
+            L"Kill Ports (All Now)",
             WS_CHILD | BS_PUSHBUTTON,
             0,
             0,
             0,
             0,
             hwnd_,
-            MenuId(kIdQuickToolPort),
+            MenuId(kIdQuickToolPortKillAll),
+            instance_,
+            nullptr);
+
+        quickPortKillOneButton_ = CreateWindowExW(
+            0,
+            L"BUTTON",
+            L"Kill Ports (One By One)",
+            WS_CHILD | BS_PUSHBUTTON,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdQuickToolPortKillOneByOne),
+            instance_,
+            nullptr);
+
+        quickProcessLabel_ = CreateWindowExW(
+            0,
+            L"STATIC",
+            L"Process Patterns (e.g. node ollama)",
+            WS_CHILD,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdQuickProcessLabel),
+            instance_,
+            nullptr);
+
+        quickProcessEdit_ = CreateWindowExW(
+            WS_EX_CLIENTEDGE,
+            L"EDIT",
+            nullptr,
+            WS_CHILD | ES_AUTOHSCROLL,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdQuickProcessEdit),
             instance_,
             nullptr);
 
         quickKillPatternButton_ = CreateWindowExW(
             0,
             L"BUTTON",
-            L"Pattern Process Killer",
+            L"Kill Processes (All Now)",
             WS_CHILD | BS_PUSHBUTTON,
             0,
             0,
             0,
             0,
             hwnd_,
-            MenuId(kIdQuickToolPattern),
+            MenuId(kIdQuickToolProcessKillAll),
+            instance_,
+            nullptr);
+
+        quickProcessKillOneButton_ = CreateWindowExW(
+            0,
+            L"BUTTON",
+            L"Kill Processes (One By One)",
+            WS_CHILD | BS_PUSHBUTTON,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdQuickToolProcessKillOneByOne),
+            instance_,
+            nullptr);
+
+        quickDeleteLabel_ = CreateWindowExW(
+            0,
+            L"STATIC",
+            L"Force Delete Target (select with Explorer)",
+            WS_CHILD,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdQuickDeleteLabel),
+            instance_,
+            nullptr);
+
+        quickDeletePathEdit_ = CreateWindowExW(
+            WS_EX_CLIENTEDGE,
+            L"EDIT",
+            nullptr,
+            WS_CHILD | ES_AUTOHSCROLL | ES_READONLY,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdQuickDeletePathEdit),
+            instance_,
+            nullptr);
+
+        quickBrowseFileButton_ = CreateWindowExW(
+            0,
+            L"BUTTON",
+            L"Browse File",
+            WS_CHILD | BS_PUSHBUTTON,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdQuickToolBrowseFile),
+            instance_,
+            nullptr);
+
+        quickBrowseFolderButton_ = CreateWindowExW(
+            0,
+            L"BUTTON",
+            L"Browse Folder",
+            WS_CHILD | BS_PUSHBUTTON,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdQuickToolBrowseFolder),
             instance_,
             nullptr);
 
         quickKillSmartDeleteButton_ = CreateWindowExW(
             0,
             L"BUTTON",
-            L"Smart Delete++",
+            L"Force Delete Selected",
             WS_CHILD | BS_PUSHBUTTON,
             0,
             0,
@@ -825,10 +1557,13 @@ namespace utm::ui
             instance_,
             nullptr);
 
-        if (!sidebarTitle_ || !navProcesses_ || !navPerformance_ || !navNetwork_ || !navHardware_ || !navQuickTools_ ||
+        if (!sidebarTitle_ || !navProcesses_ || !navPerformance_ || !navNetwork_ || !navHardware_ || !navServices_ || !navStartupApps_ || !navUsers_ || !navQuickTools_ ||
             !sectionTitle_ || !filterLabel_ || !filterEdit_ || !processList_ ||
-            !performancePlaceholder_ || !networkPlaceholder_ || !hardwarePlaceholder_ ||
-            !quickToolsTitle_ || !quickToolsHint_ || !quickKillPortButton_ || !quickKillPatternButton_ || !quickKillSmartDeleteButton_ ||
+            !performancePlaceholder_ || !networkPlaceholder_ || !hardwarePlaceholder_ || !servicesPlaceholder_ || !startupAppsPlaceholder_ || !usersPlaceholder_ ||
+            !quickToolsTitle_ || !quickToolsHint_ ||
+            !quickPortLabel_ || !quickPortEdit_ || !quickKillPortButton_ || !quickPortKillOneButton_ ||
+            !quickProcessLabel_ || !quickProcessEdit_ || !quickKillPatternButton_ || !quickProcessKillOneButton_ ||
+            !quickDeleteLabel_ || !quickDeletePathEdit_ || !quickBrowseFileButton_ || !quickBrowseFolderButton_ || !quickKillSmartDeleteButton_ ||
             !statusText_)
         {
             util::logging::Logger::Instance().Write(
@@ -842,6 +1577,9 @@ namespace utm::ui
         applyFont(navPerformance_, uiBoldFont_);
         applyFont(navNetwork_, uiBoldFont_);
         applyFont(navHardware_, uiBoldFont_);
+        applyFont(navServices_, uiBoldFont_);
+        applyFont(navStartupApps_, uiBoldFont_);
+        applyFont(navUsers_, uiBoldFont_);
         applyFont(navQuickTools_, uiBoldFont_);
         applyFont(sectionTitle_, uiTitleFont_);
         applyFont(filterLabel_, uiBoldFont_);
@@ -850,10 +1588,23 @@ namespace utm::ui
         applyFont(performancePlaceholder_, uiFont_);
         applyFont(networkPlaceholder_, uiFont_);
         applyFont(hardwarePlaceholder_, uiFont_);
+        applyFont(servicesPlaceholder_, uiFont_);
+        applyFont(startupAppsPlaceholder_, uiFont_);
+        applyFont(usersPlaceholder_, uiFont_);
         applyFont(quickToolsTitle_, uiTitleFont_);
         applyFont(quickToolsHint_, uiFont_);
+        applyFont(quickPortLabel_, uiBoldFont_);
+        applyFont(quickPortEdit_, uiFont_);
         applyFont(quickKillPortButton_, uiBoldFont_);
+        applyFont(quickPortKillOneButton_, uiBoldFont_);
+        applyFont(quickProcessLabel_, uiBoldFont_);
+        applyFont(quickProcessEdit_, uiFont_);
         applyFont(quickKillPatternButton_, uiBoldFont_);
+        applyFont(quickProcessKillOneButton_, uiBoldFont_);
+        applyFont(quickDeleteLabel_, uiBoldFont_);
+        applyFont(quickDeletePathEdit_, uiFont_);
+        applyFont(quickBrowseFileButton_, uiBoldFont_);
+        applyFont(quickBrowseFolderButton_, uiBoldFont_);
         applyFont(quickKillSmartDeleteButton_, uiBoldFont_);
         applyFont(statusText_, uiFont_);
 
@@ -884,6 +1635,12 @@ namespace utm::ui
         MoveWindow(navNetwork_, navX, navY, navWidth, kNavButtonHeight, TRUE);
         navY += kNavButtonHeight + 6;
         MoveWindow(navHardware_, navX, navY, navWidth, kNavButtonHeight, TRUE);
+        navY += kNavButtonHeight + 6;
+        MoveWindow(navServices_, navX, navY, navWidth, kNavButtonHeight, TRUE);
+        navY += kNavButtonHeight + 6;
+        MoveWindow(navStartupApps_, navX, navY, navWidth, kNavButtonHeight, TRUE);
+        navY += kNavButtonHeight + 6;
+        MoveWindow(navUsers_, navX, navY, navWidth, kNavButtonHeight, TRUE);
         navY += kNavButtonHeight + 14;
         MoveWindow(navQuickTools_, navX, navY, navWidth, kNavButtonHeight, TRUE);
 
@@ -907,16 +1664,44 @@ namespace utm::ui
         MoveWindow(performancePlaceholder_, contentX, bodyTop, contentWidth, bodyHeight, TRUE);
         MoveWindow(networkPlaceholder_, contentX, bodyTop, contentWidth, bodyHeight, TRUE);
         MoveWindow(hardwarePlaceholder_, contentX, bodyTop, contentWidth, bodyHeight, TRUE);
+        MoveWindow(servicesPlaceholder_, contentX, bodyTop, contentWidth, bodyHeight, TRUE);
+        MoveWindow(startupAppsPlaceholder_, contentX, bodyTop, contentWidth, bodyHeight, TRUE);
+        MoveWindow(usersPlaceholder_, contentX, bodyTop, contentWidth, bodyHeight, TRUE);
 
-        const int quickTop = bodyTop + 8;
-        const int buttonWidth = (std::min)(320, contentWidth);
-        MoveWindow(quickToolsTitle_, contentX, quickTop, contentWidth, 34, TRUE);
-        MoveWindow(quickToolsHint_, contentX, quickTop + 36, contentWidth, 26, TRUE);
-        MoveWindow(quickKillPortButton_, contentX, quickTop + 74, buttonWidth, 34, TRUE);
-        MoveWindow(quickKillPatternButton_, contentX, quickTop + 116, buttonWidth, 34, TRUE);
-        MoveWindow(quickKillSmartDeleteButton_, contentX, quickTop + 158, buttonWidth, 34, TRUE);
+        int quickY = bodyTop + 4;
+        MoveWindow(quickToolsTitle_, contentX, quickY, contentWidth, 32, TRUE);
+        quickY += 34;
+        MoveWindow(quickToolsHint_, contentX, quickY, contentWidth, 24, TRUE);
+        quickY += 30;
+
+        MoveWindow(quickPortLabel_, contentX, quickY, contentWidth, 22, TRUE);
+        quickY += 24;
+        MoveWindow(quickPortEdit_, contentX, quickY, contentWidth, 30, TRUE);
+        quickY += 36;
+        const int halfButtonsWidth = (contentWidth - 10) / 2;
+        MoveWindow(quickKillPortButton_, contentX, quickY, halfButtonsWidth, 32, TRUE);
+        MoveWindow(quickPortKillOneButton_, contentX + halfButtonsWidth + 10, quickY, contentWidth - halfButtonsWidth - 10, 32, TRUE);
+        quickY += 40;
+
+        MoveWindow(quickProcessLabel_, contentX, quickY, contentWidth, 22, TRUE);
+        quickY += 24;
+        MoveWindow(quickProcessEdit_, contentX, quickY, contentWidth, 30, TRUE);
+        quickY += 36;
+        MoveWindow(quickKillPatternButton_, contentX, quickY, halfButtonsWidth, 32, TRUE);
+        MoveWindow(quickProcessKillOneButton_, contentX + halfButtonsWidth + 10, quickY, contentWidth - halfButtonsWidth - 10, 32, TRUE);
+        quickY += 40;
+
+        MoveWindow(quickDeleteLabel_, contentX, quickY, contentWidth, 22, TRUE);
+        quickY += 24;
+        MoveWindow(quickDeletePathEdit_, contentX, quickY, contentWidth, 30, TRUE);
+        quickY += 36;
+        const int thirdButtonsWidth = (contentWidth - 20) / 3;
+        MoveWindow(quickBrowseFileButton_, contentX, quickY, thirdButtonsWidth, 32, TRUE);
+        MoveWindow(quickBrowseFolderButton_, contentX + thirdButtonsWidth + 10, quickY, thirdButtonsWidth, 32, TRUE);
+        MoveWindow(quickKillSmartDeleteButton_, contentX + (thirdButtonsWidth + 10) * 2, quickY, contentWidth - (thirdButtonsWidth + 10) * 2, 32, TRUE);
 
         SetWindowTextW(sectionTitle_, SectionTitleText().c_str());
+        SetWindowTextW(filterLabel_, L"Search");
         ApplySectionVisibility();
     }
 
@@ -926,20 +1711,37 @@ namespace utm::ui
         const bool perfTab = activeSection_ == Section::Performance;
         const bool networkTab = activeSection_ == Section::Network;
         const bool hardwareTab = activeSection_ == Section::Hardware;
+        const bool servicesTab = activeSection_ == Section::Services;
+        const bool startupTab = activeSection_ == Section::StartupApps;
+        const bool usersTab = activeSection_ == Section::Users;
         const bool quickToolsTab = activeSection_ == Section::QuickKillTools;
 
-        ShowWindow(filterLabel_, processTab ? SW_SHOW : SW_HIDE);
-        ShowWindow(filterEdit_, processTab ? SW_SHOW : SW_HIDE);
+        const bool showFilter = processTab;
+        ShowWindow(filterLabel_, showFilter ? SW_SHOW : SW_HIDE);
+        ShowWindow(filterEdit_, showFilter ? SW_SHOW : SW_HIDE);
         ShowWindow(processList_, processTab ? SW_SHOW : SW_HIDE);
 
         ShowWindow(performancePlaceholder_, perfTab ? SW_SHOW : SW_HIDE);
         ShowWindow(networkPlaceholder_, networkTab ? SW_SHOW : SW_HIDE);
         ShowWindow(hardwarePlaceholder_, hardwareTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(servicesPlaceholder_, servicesTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(startupAppsPlaceholder_, startupTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(usersPlaceholder_, usersTab ? SW_SHOW : SW_HIDE);
 
         ShowWindow(quickToolsTitle_, quickToolsTab ? SW_SHOW : SW_HIDE);
         ShowWindow(quickToolsHint_, quickToolsTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(quickPortLabel_, quickToolsTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(quickPortEdit_, quickToolsTab ? SW_SHOW : SW_HIDE);
         ShowWindow(quickKillPortButton_, quickToolsTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(quickPortKillOneButton_, quickToolsTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(quickProcessLabel_, quickToolsTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(quickProcessEdit_, quickToolsTab ? SW_SHOW : SW_HIDE);
         ShowWindow(quickKillPatternButton_, quickToolsTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(quickProcessKillOneButton_, quickToolsTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(quickDeleteLabel_, quickToolsTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(quickDeletePathEdit_, quickToolsTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(quickBrowseFileButton_, quickToolsTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(quickBrowseFolderButton_, quickToolsTab ? SW_SHOW : SW_HIDE);
         ShowWindow(quickKillSmartDeleteButton_, quickToolsTab ? SW_SHOW : SW_HIDE);
     }
 
@@ -977,12 +1779,21 @@ namespace utm::ui
         case Section::Hardware:
             checked = kIdNavHardware;
             break;
+        case Section::Services:
+            checked = kIdNavServices;
+            break;
+        case Section::StartupApps:
+            checked = kIdNavStartupApps;
+            break;
+        case Section::Users:
+            checked = kIdNavUsers;
+            break;
         case Section::QuickKillTools:
             checked = kIdNavQuickTools;
             break;
         }
 
-        CheckRadioButton(sidebar_, kIdNavProcesses, kIdNavQuickTools, checked);
+        CheckRadioButton(hwnd_, kIdNavProcesses, kIdNavQuickTools, checked);
     }
 
     std::wstring MainWindow::SectionTitleText() const
@@ -997,6 +1808,12 @@ namespace utm::ui
             return L"Network";
         case Section::Hardware:
             return L"Hardware";
+        case Section::Services:
+            return L"Services";
+        case Section::StartupApps:
+            return L"Startup Apps";
+        case Section::Users:
+            return L"Users";
         case Section::QuickKillTools:
             return L"Quick Kill Tools";
         default:

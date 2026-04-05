@@ -2,8 +2,11 @@
 
 #include "system/ntapi/NtApi.h"
 
+#include <RestartManager.h>
+#include <filesystem>
 #include <tlhelp32.h>
 #include <shellapi.h>
+#include <set>
 #include <vector>
 #include <unordered_map>
 
@@ -37,6 +40,124 @@ namespace
         {
             error = L"OpenProcess failed.";
             return false;
+        }
+
+        return true;
+    }
+
+    std::wstring Widen(const std::string &text)
+    {
+        return std::wstring(text.begin(), text.end());
+    }
+
+    bool TryDeletePathNow(const std::filesystem::path &path, bool isDirectory, std::wstring &error)
+    {
+        std::error_code ec;
+
+        const bool exists = std::filesystem::exists(path, ec);
+        if (ec)
+        {
+            error = L"Failed to access path: " + Widen(ec.message());
+            return false;
+        }
+
+        if (!exists)
+        {
+            return true;
+        }
+
+        if (isDirectory)
+        {
+            std::filesystem::remove_all(path, ec);
+            if (!ec && !std::filesystem::exists(path))
+            {
+                return true;
+            }
+        }
+        else
+        {
+            (void)std::filesystem::remove(path, ec);
+            if (!ec && !std::filesystem::exists(path))
+            {
+                return true;
+            }
+        }
+
+        if (ec)
+        {
+            error = L"Delete failed: " + Widen(ec.message());
+        }
+        else
+        {
+            error = L"Delete failed because the path is likely in use by another process.";
+        }
+
+        return false;
+    }
+
+    bool GetLockingPids(const std::wstring &path, std::vector<DWORD> &pids, std::wstring &error)
+    {
+        pids.clear();
+
+        DWORD sessionHandle = 0;
+        WCHAR sessionKey[CCH_RM_SESSION_KEY + 1]{};
+        DWORD status = RmStartSession(&sessionHandle, 0, sessionKey);
+        if (status != ERROR_SUCCESS)
+        {
+            error = L"RmStartSession failed (" + std::to_wstring(status) + L")";
+            return false;
+        }
+
+        LPCWSTR resources[1] = {path.c_str()};
+        status = RmRegisterResources(sessionHandle, 1, resources, 0, nullptr, 0, nullptr);
+        if (status != ERROR_SUCCESS)
+        {
+            RmEndSession(sessionHandle);
+            error = L"RmRegisterResources failed (" + std::to_wstring(status) + L")";
+            return false;
+        }
+
+        UINT needed = 0;
+        UINT count = 0;
+        DWORD rebootReasons = 0;
+        status = RmGetList(sessionHandle, &needed, &count, nullptr, &rebootReasons);
+        if (status == ERROR_SUCCESS)
+        {
+            RmEndSession(sessionHandle);
+            return true;
+        }
+
+        if (status != ERROR_MORE_DATA)
+        {
+            RmEndSession(sessionHandle);
+            error = L"RmGetList failed (" + std::to_wstring(status) + L")";
+            return false;
+        }
+
+        std::vector<RM_PROCESS_INFO> infos(needed);
+        count = needed;
+        status = RmGetList(sessionHandle, &needed, &count, infos.data(), &rebootReasons);
+        RmEndSession(sessionHandle);
+
+        if (status != ERROR_SUCCESS)
+        {
+            error = L"RmGetList details failed (" + std::to_wstring(status) + L")";
+            return false;
+        }
+
+        std::set<DWORD> dedup;
+        for (UINT i = 0; i < count; ++i)
+        {
+            const DWORD pid = infos[i].Process.dwProcessId;
+            if (pid == 0 || pid == 4 || pid == GetCurrentProcessId())
+            {
+                continue;
+            }
+
+            if (dedup.insert(pid).second)
+            {
+                pids.push_back(pid);
+            }
         }
 
         return true;
@@ -408,6 +529,53 @@ namespace utm::tools::process
         }
 
         return true;
+    }
+
+    bool ProcessActions::ForceDeletePath(const std::wstring &path, bool isDirectory, std::wstring &error)
+    {
+        if (path.empty())
+        {
+            error = L"No target path selected.";
+            return false;
+        }
+
+        const std::filesystem::path target(path);
+
+        if (TryDeletePathNow(target, isDirectory, error))
+        {
+            return true;
+        }
+
+        std::vector<DWORD> lockingPids;
+        std::wstring lockError;
+        if (!GetLockingPids(path, lockingPids, lockError) && !lockError.empty())
+        {
+            error = lockError;
+        }
+
+        for (const DWORD pid : lockingPids)
+        {
+            std::wstring killError;
+            if (!TerminateTree(pid, killError))
+            {
+                (void)SmartTerminate(pid, 1500, killError);
+            }
+        }
+
+        Sleep(250);
+
+        if (TryDeletePathNow(target, isDirectory, error))
+        {
+            return true;
+        }
+
+        if (!lockError.empty())
+        {
+            error += L"\n";
+            error += lockError;
+        }
+
+        return false;
     }
 
 } // namespace utm::tools::process

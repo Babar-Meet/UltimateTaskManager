@@ -47,6 +47,9 @@ namespace utm::ui
             Performance,
             Network,
             Hardware,
+            Services,
+            StartupApps,
+            Users,
             QuickKillTools
         };
 
@@ -88,6 +91,9 @@ namespace utm::ui
         HWND navPerformance_ = nullptr;
         HWND navNetwork_ = nullptr;
         HWND navHardware_ = nullptr;
+        HWND navServices_ = nullptr;
+        HWND navStartupApps_ = nullptr;
+        HWND navUsers_ = nullptr;
         HWND navQuickTools_ = nullptr;
 
         HWND sectionTitle_ = nullptr;
@@ -97,8 +103,21 @@ namespace utm::ui
         HWND performancePlaceholder_ = nullptr;
         HWND networkPlaceholder_ = nullptr;
         HWND hardwarePlaceholder_ = nullptr;
+        HWND servicesPlaceholder_ = nullptr;
+        HWND startupAppsPlaceholder_ = nullptr;
+        HWND usersPlaceholder_ = nullptr;
         HWND quickToolsTitle_ = nullptr;
         HWND quickToolsHint_ = nullptr;
+        HWND quickPortLabel_ = nullptr;
+        HWND quickPortEdit_ = nullptr;
+        HWND quickPortKillOneButton_ = nullptr;
+        HWND quickProcessLabel_ = nullptr;
+        HWND quickProcessEdit_ = nullptr;
+        HWND quickProcessKillOneButton_ = nullptr;
+        HWND quickDeleteLabel_ = nullptr;
+        HWND quickDeletePathEdit_ = nullptr;
+        HWND quickBrowseFileButton_ = nullptr;
+        HWND quickBrowseFolderButton_ = nullptr;
         HWND quickKillPortButton_ = nullptr;
         HWND quickKillPatternButton_ = nullptr;
         HWND quickKillSmartDeleteButton_ = nullptr;
@@ -122,7 +141,10 @@ namespace utm::ui
 
         SortColumn sortColumn_ = SortColumn::Cpu;
         bool sortAscending_ = false;
-        Section activeSection_ = Section::Processes;
+        Section activeSection_ = Section::QuickKillTools;
+
+        std::wstring quickDeleteTargetPath_;
+        bool quickDeleteTargetIsDirectory_ = false;
 
         std::uint32_t contextPid_ = 0;
     };

@@ -22,6 +22,8 @@ namespace utm::tools::process
         static bool OpenFileLocation(DWORD pid, std::wstring &error);
         static bool OpenProperties(DWORD pid, std::wstring &error);
 
+        static bool ForceDeletePath(const std::wstring &path, bool isDirectory, std::wstring &error);
+
     private:
         static std::wstring LastErrorMessage(const wchar_t *context);
     };

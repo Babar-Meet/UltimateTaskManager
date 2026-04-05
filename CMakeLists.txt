@@ -28,6 +28,7 @@ target_include_directories(UltimateTaskManager PRIVATE include)
 
 target_link_libraries(UltimateTaskManager PRIVATE
     advapi32
+    comdlg32
     comctl32
     d2d1
     dxgi
