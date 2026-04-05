@@ -17,6 +17,11 @@ set(SOURCES
     src/system/process/ProcessEnumerator.cpp
     src/tools/process/ProcessActions.cpp
     src/ui/MainWindow.cpp
+    src/ui/SidebarNavigation.cpp
+    src/ui/ProcessListView.cpp
+    src/ui/PerformancePanel.cpp
+    src/ui/QuickToolsPanel.cpp
+    src/ui/StatusBar.cpp
     src/util/logging/Logger.cpp
     src/util/security/PrivilegeManager.cpp
     resources/UltimateTaskManager.rc

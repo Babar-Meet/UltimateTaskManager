@@ -708,6 +708,12 @@ namespace utm::ui
         }
 
         UpdateNetworkAdapterInfo();
+
+        sidebarNavigationComponent_.Attach(this);
+        processListViewComponent_.Attach(this);
+        performancePanelComponent_.Attach(this);
+        quickToolsPanelComponent_.Attach(this);
+        statusBarComponent_.Attach(this);
     }
 
     MainWindow::~MainWindow()
@@ -895,51 +901,10 @@ namespace utm::ui
                 break;
             }
 
-            if (hdr->hwndFrom == processList_)
+            LRESULT notifyResult = 0;
+            if (processListViewComponent_.HandleNotify(hdr, lParam, notifyResult))
             {
-                if (hdr->code == LVN_GETDISPINFOW)
-                {
-                    auto *info = reinterpret_cast<NMLVDISPINFOW *>(lParam);
-                    if (!info)
-                    {
-                        return 0;
-                    }
-
-                    if ((info->item.mask & LVIF_TEXT) != 0)
-                    {
-                        const std::wstring text = CellText(static_cast<size_t>(info->item.iItem), info->item.iSubItem);
-                        StringCchCopyW(info->item.pszText, info->item.cchTextMax, text.c_str());
-                    }
-                    return 0;
-                }
-
-                if (hdr->code == LVN_COLUMNCLICK)
-                {
-                    const auto *click = reinterpret_cast<const NMLISTVIEW *>(lParam);
-                    const auto clicked = static_cast<SortColumn>(std::clamp(click->iSubItem, 0, 10));
-
-                    if (clicked == sortColumn_)
-                    {
-                        sortAscending_ = !sortAscending_;
-                    }
-                    else
-                    {
-                        sortColumn_ = clicked;
-                        sortAscending_ = clicked == SortColumn::Name || clicked == SortColumn::Pid;
-                    }
-
-                    ApplyFilterAndSort();
-                    RefreshProcessView();
-                    return 0;
-                }
-
-                if (hdr->code == NM_RCLICK)
-                {
-                    DWORD pos = GetMessagePos();
-                    POINT pt{GET_X_LPARAM(pos), GET_Y_LPARAM(pos)};
-                    ShowProcessContextMenu(pt);
-                    return 0;
-                }
+                return notifyResult;
             }
 
             break;
@@ -950,375 +915,17 @@ namespace utm::ui
             const UINT id = LOWORD(wParam);
             const UINT code = HIWORD(wParam);
 
-            if (id == kIdNavProcesses)
+            if (sidebarNavigationComponent_.HandleCommand(id) ||
+                performancePanelComponent_.HandleCommand(id) ||
+                processListViewComponent_.HandleCommand(id, code) ||
+                quickToolsPanelComponent_.HandleCommand(id))
             {
-                SetActiveSection(Section::Processes);
-                return 0;
-            }
-
-            if (id == kIdNavPerformance)
-            {
-                SetActiveSection(Section::Performance);
-                return 0;
-            }
-
-            if (id == kIdNavNetwork)
-            {
-                SetActiveSection(Section::Network);
-                return 0;
-            }
-
-            if (id == kIdNavHardware)
-            {
-                SetActiveSection(Section::Hardware);
-                return 0;
-            }
-
-            if (id == kIdNavServices)
-            {
-                SetActiveSection(Section::Services);
-                return 0;
-            }
-
-            if (id == kIdNavStartupApps)
-            {
-                SetActiveSection(Section::StartupApps);
-                return 0;
-            }
-
-            if (id == kIdNavUsers)
-            {
-                SetActiveSection(Section::Users);
-                return 0;
-            }
-
-            if (id == kIdNavQuickTools)
-            {
-                SetActiveSection(Section::QuickKillTools);
-                return 0;
-            }
-
-            if (id == kIdPerfNavCpu)
-            {
-                SetActivePerformanceView(PerformanceView::Cpu);
-                return 0;
-            }
-
-            if (id == kIdPerfCpuModeSingle)
-            {
-                SetCpuGraphMode(CpuGraphMode::Single);
-                return 0;
-            }
-
-            if (id == kIdPerfCpuModePerCore)
-            {
-                SetCpuGraphMode(CpuGraphMode::PerCore);
-                return 0;
-            }
-
-            if (id == kIdPerfNavAll)
-            {
-                SetActivePerformanceView(PerformanceView::All);
-                return 0;
-            }
-
-            if (id == kIdPerfNavMemory)
-            {
-                SetActivePerformanceView(PerformanceView::Memory);
-                return 0;
-            }
-
-            if (id == kIdPerfNavDisk)
-            {
-                SetActivePerformanceView(PerformanceView::Disk);
-                return 0;
-            }
-
-            if (id == kIdPerfNavWifi || id == kIdPerfNavEthernet || id == kIdPerfNavGpu ||
-                (id >= kIdPerfNavDynamicBase && id <= kIdPerfNavDynamicMax))
-            {
-                if (HandleDynamicPerformanceSubviewCommand(id))
-                {
-                    return 0;
-                }
-            }
-
-            if (id == kIdFilterEdit && code == EN_CHANGE)
-            {
-                wchar_t buffer[256]{};
-                GetWindowTextW(filterEdit_, buffer, static_cast<int>(sizeof(buffer) / sizeof(buffer[0])));
-                filterText_ = buffer;
-                ApplyFilterAndSort();
-                RefreshProcessView();
                 return 0;
             }
 
             if (id >= kCommandEndTask && id <= kCommandAffinityCore1)
             {
                 ExecuteProcessCommand(id);
-                return 0;
-            }
-
-            if (id == kIdQuickToolPortKillAll || id == kIdQuickToolPortKillOneByOne)
-            {
-                wchar_t input[512]{};
-                GetWindowTextW(quickPortEdit_, input, static_cast<int>(std::size(input)));
-                const auto ports = ParsePorts(input);
-                if (ports.empty())
-                {
-                    MessageBoxW(hwnd_, L"Enter one or more ports (examples: 5000 3000 3690 6699).", L"Port Killer", MB_OK | MB_ICONINFORMATION);
-                    return 0;
-                }
-
-                std::unordered_map<DWORD, std::wstring> reasonsByPid;
-                std::set<DWORD> orderedPids;
-
-                for (const auto port : ports)
-                {
-                    const auto pids = PidsUsingPort(port);
-                    for (const auto pid : pids)
-                    {
-                        orderedPids.insert(pid);
-                        auto &reason = reasonsByPid[pid];
-                        if (!reason.empty())
-                        {
-                            reason += L", ";
-                        }
-                        reason += L"port ";
-                        reason += std::to_wstring(port);
-                    }
-                }
-
-                if (orderedPids.empty())
-                {
-                    MessageBoxW(hwnd_, L"No process currently uses the entered port(s).", L"Port Killer", MB_OK | MB_ICONINFORMATION);
-                    return 0;
-                }
-
-                int killed = 0;
-                int failed = 0;
-                int skipped = 0;
-                std::wstring lastError;
-
-                if (id == kIdQuickToolPortKillOneByOne)
-                {
-                    for (const auto pid : orderedPids)
-                    {
-                        std::wstring prompt = L"Kill this process?\n\n";
-                        prompt += PidLabel(snapshot_, pid);
-                        prompt += L"\nUsing: ";
-                        prompt += reasonsByPid[pid];
-                        prompt += L"\n\nYes = kill, No = skip, Cancel = stop.";
-
-                        const int decision = MessageBoxW(hwnd_, prompt.c_str(), L"Port Killer (One By One)", MB_ICONQUESTION | MB_YESNOCANCEL);
-                        if (decision == IDCANCEL)
-                        {
-                            break;
-                        }
-                        if (decision == IDNO)
-                        {
-                            ++skipped;
-                            continue;
-                        }
-
-                        std::wstring error;
-                        if (tools::process::ProcessActions::SmartTerminate(pid, 1500, error))
-                        {
-                            ++killed;
-                        }
-                        else
-                        {
-                            ++failed;
-                            if (!error.empty())
-                            {
-                                lastError = error;
-                            }
-                        }
-                    }
-                }
-                else
-                {
-                    int success = 0;
-                    int failures = 0;
-                    KillPidList(orderedPids, 1500, success, failures, lastError);
-                    killed = success;
-                    failed = failures;
-                }
-
-                std::wstring result = L"Port killer summary\n\nKilled: ";
-                result += std::to_wstring(killed);
-                result += L"\nSkipped: ";
-                result += std::to_wstring(skipped);
-                result += L"\nFailed: ";
-                result += std::to_wstring(failed);
-                if (!lastError.empty())
-                {
-                    result += L"\n\nLast error: ";
-                    result += lastError;
-                }
-
-                MessageBoxW(hwnd_, result.c_str(), L"Port Killer", failed > 0 ? MB_OK | MB_ICONWARNING : MB_OK | MB_ICONINFORMATION);
-                return 0;
-            }
-
-            if (id == kIdQuickToolProcessKillAll || id == kIdQuickToolProcessKillOneByOne)
-            {
-                wchar_t input[512]{};
-                GetWindowTextW(quickProcessEdit_, input, static_cast<int>(std::size(input)));
-                const auto tokens = SplitTokens(input);
-                if (tokens.empty())
-                {
-                    MessageBoxW(hwnd_, L"Enter one or more process patterns (examples: node ollama chrome).", L"Process Killer", MB_OK | MB_ICONINFORMATION);
-                    return 0;
-                }
-
-                std::unordered_map<DWORD, std::wstring> reasonsByPid;
-                std::set<DWORD> orderedPids;
-
-                for (const auto &token : tokens)
-                {
-                    const auto matches = PidsMatchingPattern(snapshot_, token);
-                    for (const auto pid : matches)
-                    {
-                        orderedPids.insert(pid);
-                        auto &reason = reasonsByPid[pid];
-                        if (!reason.empty())
-                        {
-                            reason += L", ";
-                        }
-                        reason += token;
-                    }
-                }
-
-                if (orderedPids.empty())
-                {
-                    MessageBoxW(hwnd_, L"No running process matches the entered pattern(s).", L"Process Killer", MB_OK | MB_ICONINFORMATION);
-                    return 0;
-                }
-
-                int killed = 0;
-                int failed = 0;
-                int skipped = 0;
-                std::wstring lastError;
-
-                if (id == kIdQuickToolProcessKillOneByOne)
-                {
-                    for (const auto pid : orderedPids)
-                    {
-                        std::wstring prompt = L"Kill this process?\n\n";
-                        prompt += PidLabel(snapshot_, pid);
-                        prompt += L"\nMatched: ";
-                        prompt += reasonsByPid[pid];
-                        prompt += L"\n\nYes = kill, No = skip, Cancel = stop.";
-
-                        const int decision = MessageBoxW(hwnd_, prompt.c_str(), L"Process Killer (One By One)", MB_ICONQUESTION | MB_YESNOCANCEL);
-                        if (decision == IDCANCEL)
-                        {
-                            break;
-                        }
-                        if (decision == IDNO)
-                        {
-                            ++skipped;
-                            continue;
-                        }
-
-                        std::wstring error;
-                        if (tools::process::ProcessActions::SmartTerminate(pid, 1500, error))
-                        {
-                            ++killed;
-                        }
-                        else
-                        {
-                            ++failed;
-                            if (!error.empty())
-                            {
-                                lastError = error;
-                            }
-                        }
-                    }
-                }
-                else
-                {
-                    int success = 0;
-                    int failures = 0;
-                    KillPidList(orderedPids, 1500, success, failures, lastError);
-                    killed = success;
-                    failed = failures;
-                }
-
-                std::wstring result = L"Process killer summary\n\nKilled: ";
-                result += std::to_wstring(killed);
-                result += L"\nSkipped: ";
-                result += std::to_wstring(skipped);
-                result += L"\nFailed: ";
-                result += std::to_wstring(failed);
-                if (!lastError.empty())
-                {
-                    result += L"\n\nLast error: ";
-                    result += lastError;
-                }
-
-                MessageBoxW(hwnd_, result.c_str(), L"Process Killer", failed > 0 ? MB_OK | MB_ICONWARNING : MB_OK | MB_ICONINFORMATION);
-                return 0;
-            }
-
-            if (id == kIdQuickToolBrowseFile)
-            {
-                std::wstring path;
-                if (BrowseForFile(hwnd_, path))
-                {
-                    quickDeleteTargetPath_ = path;
-                    quickDeleteTargetIsDirectory_ = false;
-                    SetWindowTextW(quickDeletePathEdit_, quickDeleteTargetPath_.c_str());
-                }
-                return 0;
-            }
-
-            if (id == kIdQuickToolBrowseFolder)
-            {
-                std::wstring path;
-                if (BrowseForFolder(hwnd_, path))
-                {
-                    quickDeleteTargetPath_ = path;
-                    quickDeleteTargetIsDirectory_ = true;
-                    SetWindowTextW(quickDeletePathEdit_, quickDeleteTargetPath_.c_str());
-                }
-                return 0;
-            }
-
-            if (id == kIdQuickToolSmartDelete)
-            {
-                if (quickDeleteTargetPath_.empty())
-                {
-                    MessageBoxW(hwnd_, L"Select a file or folder first.", L"Force Delete", MB_OK | MB_ICONINFORMATION);
-                    return 0;
-                }
-
-                std::wstring error;
-                bool isDirectory = quickDeleteTargetIsDirectory_;
-                if (!isDirectory)
-                {
-                    std::error_code ec;
-                    isDirectory = std::filesystem::is_directory(std::filesystem::path(quickDeleteTargetPath_), ec);
-                }
-                if (tools::process::ProcessActions::ForceDeletePath(quickDeleteTargetPath_, isDirectory, error))
-                {
-                    std::wstring msg = L"Deleted successfully:\n";
-                    msg += quickDeleteTargetPath_;
-                    MessageBoxW(hwnd_, msg.c_str(), L"Force Delete", MB_OK | MB_ICONINFORMATION);
-
-                    quickDeleteTargetPath_.clear();
-                    quickDeleteTargetIsDirectory_ = false;
-                    SetWindowTextW(quickDeletePathEdit_, L"");
-                }
-                else
-                {
-                    if (error.empty())
-                    {
-                        error = L"Force delete failed.";
-                    }
-                    MessageBoxW(hwnd_, error.c_str(), L"Force Delete", MB_OK | MB_ICONERROR);
-                }
                 return 0;
             }
 
@@ -1331,7 +938,7 @@ namespace utm::ui
             HWND control = reinterpret_cast<HWND>(lParam);
             SetBkMode(dc, TRANSPARENT);
 
-            if (control == sidebar_ || GetParent(control) == sidebar_)
+            if (sidebarNavigationComponent_.IsSidebarStaticControl(control))
             {
                 SetBkColor(dc, kSidebarBackgroundColor);
                 SetTextColor(dc, RGB(38, 50, 68));
@@ -1372,7 +979,7 @@ namespace utm::ui
                 return reinterpret_cast<LRESULT>(backgroundBrush_);
             }
 
-            if (control == statusText_)
+            if (statusBarComponent_.IsStatusControl(control))
             {
                 SetBkColor(dc, kMainBackgroundColor);
                 SetTextColor(dc, RGB(86, 100, 122));
@@ -1404,43 +1011,18 @@ namespace utm::ui
         {
             HDC dc = reinterpret_cast<HDC>(wParam);
             HWND control = reinterpret_cast<HWND>(lParam);
-            if (control == navProcesses_ ||
-                control == navPerformance_ ||
-                control == navNetwork_ ||
-                control == navHardware_ ||
-                control == navServices_ ||
-                control == navStartupApps_ ||
-                control == navUsers_ ||
-                control == navQuickTools_)
+            if (sidebarNavigationComponent_.IsSidebarButtonControl(control))
             {
                 SetBkColor(dc, kSidebarBackgroundColor);
                 SetTextColor(dc, RGB(32, 48, 76));
                 return reinterpret_cast<LRESULT>(sidebarBrush_);
             }
 
-            if (control == perfNavCpu_ ||
-                control == perfNavAll_ ||
-                control == perfNavMemory_ ||
-                control == perfNavDisk_ ||
-                control == perfNavWifi_ ||
-                control == perfNavEthernet_ ||
-                control == perfNavGpu_ ||
-                control == perfCpuModeSingle_ ||
-                control == perfCpuModePerCore_)
+            if (performancePanelComponent_.IsPerformanceButtonControl(control))
             {
                 SetBkColor(dc, kCardColor);
                 SetTextColor(dc, RGB(32, 48, 76));
                 return reinterpret_cast<LRESULT>(cardBrush_);
-            }
-
-            for (HWND extraButton : perfNavExtraButtons_)
-            {
-                if (control == extraButton)
-                {
-                    SetBkColor(dc, kCardColor);
-                    SetTextColor(dc, RGB(32, 48, 76));
-                    return reinterpret_cast<LRESULT>(cardBrush_);
-                }
             }
 
             SetBkColor(dc, kMainBackgroundColor);
@@ -1459,37 +1041,9 @@ namespace utm::ui
 
         case WM_MOUSEWHEEL:
         {
-            const bool perfSection = activeSection_ == Section::Performance;
-            const bool scrollAllOrGpu =
-                activePerformanceView_ == PerformanceView::All ||
-                activePerformanceView_ == PerformanceView::Gpu;
-            const bool scrollCpuPerCore =
-                activePerformanceView_ == PerformanceView::Cpu &&
-                cpuGraphMode_ == CpuGraphMode::PerCore;
-
-            if (perfSection && perfCoreGrid_ && (scrollAllOrGpu || scrollCpuPerCore))
+            if (performancePanelComponent_.HandleMouseWheel(wParam, lParam))
             {
-                RECT area{};
-                GetWindowRect(perfCoreGrid_, &area);
-
-                POINT mouse{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
-                if (PtInRect(&area, mouse))
-                {
-                    const int wheelSteps = GET_WHEEL_DELTA_WPARAM(wParam) / WHEEL_DELTA;
-                    if (wheelSteps != 0)
-                    {
-                        RECT client{};
-                        GetClientRect(perfCoreGrid_, &client);
-                        const int viewport = (std::max)(1, static_cast<int>(client.bottom - client.top));
-                        int *scrollOffset = scrollCpuPerCore ? &perfCpuCoreScrollOffset_ : &perfAllScrollOffset_;
-                        const int contentHeight = scrollCpuPerCore ? perfCpuCoreContentHeight_ : perfAllContentHeight_;
-                        const int maxOffset = (std::max)(0, contentHeight - viewport);
-                        const int nextOffset = *scrollOffset - wheelSteps * 40;
-                        *scrollOffset = (std::clamp)(nextOffset, 0, maxOffset);
-                        InvalidateRect(perfCoreGrid_, nullptr, FALSE);
-                    }
-                    return 0;
-                }
+                return 0;
             }
 
             break;
@@ -1503,20 +1057,10 @@ namespace utm::ui
                 break;
             }
 
-            if (draw->CtlID == kIdPerfGraphCpu ||
-                draw->CtlID == kIdPerfGraphMemory ||
-                draw->CtlID == kIdPerfGraphGpu ||
-                draw->CtlID == kIdPerfGraphUpload ||
-                draw->CtlID == kIdPerfGraphDownload)
+            LRESULT drawResult = 0;
+            if (performancePanelComponent_.HandleDrawItem(draw, drawResult))
             {
-                DrawPerformanceGraph(draw);
-                return TRUE;
-            }
-
-            if (draw->CtlID == kIdPerfCoreGrid)
-            {
-                DrawCoreGrid(draw);
-                return TRUE;
+                return drawResult;
             }
 
             break;
@@ -1532,6 +1076,274 @@ namespace utm::ui
         }
 
         return DefWindowProcW(hwnd, message, wParam, lParam);
+    }
+
+    bool MainWindow::HandleQuickToolsCommand(UINT id)
+    {
+        if (id == kIdQuickToolPortKillAll || id == kIdQuickToolPortKillOneByOne)
+        {
+            wchar_t input[512]{};
+            GetWindowTextW(quickPortEdit_, input, static_cast<int>(std::size(input)));
+            const auto ports = ParsePorts(input);
+            if (ports.empty())
+            {
+                MessageBoxW(hwnd_, L"Enter one or more ports (examples: 5000 3000 3690 6699).", L"Port Killer", MB_OK | MB_ICONINFORMATION);
+                return true;
+            }
+
+            std::unordered_map<DWORD, std::wstring> reasonsByPid;
+            std::set<DWORD> orderedPids;
+
+            for (const auto port : ports)
+            {
+                const auto pids = PidsUsingPort(port);
+                for (const auto pid : pids)
+                {
+                    orderedPids.insert(pid);
+                    auto &reason = reasonsByPid[pid];
+                    if (!reason.empty())
+                    {
+                        reason += L", ";
+                    }
+                    reason += L"port ";
+                    reason += std::to_wstring(port);
+                }
+            }
+
+            if (orderedPids.empty())
+            {
+                MessageBoxW(hwnd_, L"No process currently uses the entered port(s).", L"Port Killer", MB_OK | MB_ICONINFORMATION);
+                return true;
+            }
+
+            int killed = 0;
+            int failed = 0;
+            int skipped = 0;
+            std::wstring lastError;
+
+            if (id == kIdQuickToolPortKillOneByOne)
+            {
+                for (const auto pid : orderedPids)
+                {
+                    std::wstring prompt = L"Kill this process?\n\n";
+                    prompt += PidLabel(snapshot_, pid);
+                    prompt += L"\nUsing: ";
+                    prompt += reasonsByPid[pid];
+                    prompt += L"\n\nYes = kill, No = skip, Cancel = stop.";
+
+                    const int decision = MessageBoxW(hwnd_, prompt.c_str(), L"Port Killer (One By One)", MB_ICONQUESTION | MB_YESNOCANCEL);
+                    if (decision == IDCANCEL)
+                    {
+                        break;
+                    }
+                    if (decision == IDNO)
+                    {
+                        ++skipped;
+                        continue;
+                    }
+
+                    std::wstring error;
+                    if (tools::process::ProcessActions::SmartTerminate(pid, 1500, error))
+                    {
+                        ++killed;
+                    }
+                    else
+                    {
+                        ++failed;
+                        if (!error.empty())
+                        {
+                            lastError = error;
+                        }
+                    }
+                }
+            }
+            else
+            {
+                int success = 0;
+                int failures = 0;
+                KillPidList(orderedPids, 1500, success, failures, lastError);
+                killed = success;
+                failed = failures;
+            }
+
+            std::wstring result = L"Port killer summary\n\nKilled: ";
+            result += std::to_wstring(killed);
+            result += L"\nSkipped: ";
+            result += std::to_wstring(skipped);
+            result += L"\nFailed: ";
+            result += std::to_wstring(failed);
+            if (!lastError.empty())
+            {
+                result += L"\n\nLast error: ";
+                result += lastError;
+            }
+
+            MessageBoxW(hwnd_, result.c_str(), L"Port Killer", failed > 0 ? MB_OK | MB_ICONWARNING : MB_OK | MB_ICONINFORMATION);
+            return true;
+        }
+
+        if (id == kIdQuickToolProcessKillAll || id == kIdQuickToolProcessKillOneByOne)
+        {
+            wchar_t input[512]{};
+            GetWindowTextW(quickProcessEdit_, input, static_cast<int>(std::size(input)));
+            const auto tokens = SplitTokens(input);
+            if (tokens.empty())
+            {
+                MessageBoxW(hwnd_, L"Enter one or more process patterns (examples: node ollama chrome).", L"Process Killer", MB_OK | MB_ICONINFORMATION);
+                return true;
+            }
+
+            std::unordered_map<DWORD, std::wstring> reasonsByPid;
+            std::set<DWORD> orderedPids;
+
+            for (const auto &token : tokens)
+            {
+                const auto matches = PidsMatchingPattern(snapshot_, token);
+                for (const auto pid : matches)
+                {
+                    orderedPids.insert(pid);
+                    auto &reason = reasonsByPid[pid];
+                    if (!reason.empty())
+                    {
+                        reason += L", ";
+                    }
+                    reason += token;
+                }
+            }
+
+            if (orderedPids.empty())
+            {
+                MessageBoxW(hwnd_, L"No running process matches the entered pattern(s).", L"Process Killer", MB_OK | MB_ICONINFORMATION);
+                return true;
+            }
+
+            int killed = 0;
+            int failed = 0;
+            int skipped = 0;
+            std::wstring lastError;
+
+            if (id == kIdQuickToolProcessKillOneByOne)
+            {
+                for (const auto pid : orderedPids)
+                {
+                    std::wstring prompt = L"Kill this process?\n\n";
+                    prompt += PidLabel(snapshot_, pid);
+                    prompt += L"\nMatched: ";
+                    prompt += reasonsByPid[pid];
+                    prompt += L"\n\nYes = kill, No = skip, Cancel = stop.";
+
+                    const int decision = MessageBoxW(hwnd_, prompt.c_str(), L"Process Killer (One By One)", MB_ICONQUESTION | MB_YESNOCANCEL);
+                    if (decision == IDCANCEL)
+                    {
+                        break;
+                    }
+                    if (decision == IDNO)
+                    {
+                        ++skipped;
+                        continue;
+                    }
+
+                    std::wstring error;
+                    if (tools::process::ProcessActions::SmartTerminate(pid, 1500, error))
+                    {
+                        ++killed;
+                    }
+                    else
+                    {
+                        ++failed;
+                        if (!error.empty())
+                        {
+                            lastError = error;
+                        }
+                    }
+                }
+            }
+            else
+            {
+                int success = 0;
+                int failures = 0;
+                KillPidList(orderedPids, 1500, success, failures, lastError);
+                killed = success;
+                failed = failures;
+            }
+
+            std::wstring result = L"Process killer summary\n\nKilled: ";
+            result += std::to_wstring(killed);
+            result += L"\nSkipped: ";
+            result += std::to_wstring(skipped);
+            result += L"\nFailed: ";
+            result += std::to_wstring(failed);
+            if (!lastError.empty())
+            {
+                result += L"\n\nLast error: ";
+                result += lastError;
+            }
+
+            MessageBoxW(hwnd_, result.c_str(), L"Process Killer", failed > 0 ? MB_OK | MB_ICONWARNING : MB_OK | MB_ICONINFORMATION);
+            return true;
+        }
+
+        if (id == kIdQuickToolBrowseFile)
+        {
+            std::wstring path;
+            if (BrowseForFile(hwnd_, path))
+            {
+                quickDeleteTargetPath_ = path;
+                quickDeleteTargetIsDirectory_ = false;
+                SetWindowTextW(quickDeletePathEdit_, quickDeleteTargetPath_.c_str());
+            }
+            return true;
+        }
+
+        if (id == kIdQuickToolBrowseFolder)
+        {
+            std::wstring path;
+            if (BrowseForFolder(hwnd_, path))
+            {
+                quickDeleteTargetPath_ = path;
+                quickDeleteTargetIsDirectory_ = true;
+                SetWindowTextW(quickDeletePathEdit_, quickDeleteTargetPath_.c_str());
+            }
+            return true;
+        }
+
+        if (id == kIdQuickToolSmartDelete)
+        {
+            if (quickDeleteTargetPath_.empty())
+            {
+                MessageBoxW(hwnd_, L"Select a file or folder first.", L"Force Delete", MB_OK | MB_ICONINFORMATION);
+                return true;
+            }
+
+            std::wstring error;
+            bool isDirectory = quickDeleteTargetIsDirectory_;
+            if (!isDirectory)
+            {
+                std::error_code ec;
+                isDirectory = std::filesystem::is_directory(std::filesystem::path(quickDeleteTargetPath_), ec);
+            }
+            if (tools::process::ProcessActions::ForceDeletePath(quickDeleteTargetPath_, isDirectory, error))
+            {
+                std::wstring msg = L"Deleted successfully:\n";
+                msg += quickDeleteTargetPath_;
+                MessageBoxW(hwnd_, msg.c_str(), L"Force Delete", MB_OK | MB_ICONINFORMATION);
+
+                quickDeleteTargetPath_.clear();
+                quickDeleteTargetIsDirectory_ = false;
+                SetWindowTextW(quickDeletePathEdit_, L"");
+            }
+            else
+            {
+                if (error.empty())
+                {
+                    error = L"Force delete failed.";
+                }
+                MessageBoxW(hwnd_, error.c_str(), L"Force Delete", MB_OK | MB_ICONERROR);
+            }
+            return true;
+        }
+
+        return false;
     }
 
     bool MainWindow::CreateChildControls()
@@ -2166,7 +1978,7 @@ namespace utm::ui
         applyFont(statusText_, uiFont_);
 
         RebuildPerformanceSubviewNavigation();
-        UpdateSidebarSelection();
+        sidebarNavigationComponent_.UpdateSelection();
         UpdatePerformanceSubviewSelection();
         ApplySectionVisibility();
         return true;
@@ -2360,7 +2172,7 @@ namespace utm::ui
         MoveWindow(quickBrowseFolderButton_, contentX + thirdButtonsWidth + 10, quickY, thirdButtonsWidth, 32, TRUE);
         MoveWindow(quickKillSmartDeleteButton_, contentX + (thirdButtonsWidth + 10) * 2, quickY, contentWidth - (thirdButtonsWidth + 10) * 2, 32, TRUE);
 
-        SetWindowTextW(sectionTitle_, SectionTitleText().c_str());
+        SetWindowTextW(sectionTitle_, sidebarNavigationComponent_.ActiveSectionTitle().c_str());
         SetWindowTextW(filterLabel_, L"Search");
         ApplySectionVisibility();
     }
@@ -2441,381 +2253,6 @@ namespace utm::ui
         ShowWindow(quickKillSmartDeleteButton_, quickToolsTab ? SW_SHOW : SW_HIDE);
     }
 
-    void MainWindow::SetActivePerformanceView(PerformanceView view)
-    {
-        if (activePerformanceView_ == view)
-        {
-            return;
-        }
-
-        activePerformanceView_ = view;
-        if (activePerformanceView_ == PerformanceView::All ||
-            activePerformanceView_ == PerformanceView::Gpu)
-        {
-            perfAllScrollOffset_ = 0;
-        }
-        if (activePerformanceView_ != PerformanceView::Cpu)
-        {
-            perfCpuCoreScrollOffset_ = 0;
-            perfCpuCoreContentHeight_ = 0;
-        }
-        UpdatePerformanceSubviewSelection();
-
-        if (activeSection_ == Section::Performance)
-        {
-            LayoutControls();
-            RefreshPerformancePanel();
-        }
-    }
-
-    void MainWindow::SetCpuGraphMode(CpuGraphMode mode)
-    {
-        if (cpuGraphMode_ == mode)
-        {
-            return;
-        }
-
-        cpuGraphMode_ = mode;
-        if (cpuGraphMode_ == CpuGraphMode::Single)
-        {
-            perfCpuCoreScrollOffset_ = 0;
-            perfCpuCoreContentHeight_ = 0;
-        }
-
-        UpdatePerformanceSubviewSelection();
-
-        if (activeSection_ == Section::Performance && activePerformanceView_ == PerformanceView::Cpu)
-        {
-            LayoutControls();
-            RefreshPerformancePanel();
-        }
-    }
-
-    void MainWindow::UpdatePerformanceSubviewSelection()
-    {
-        const auto isDynamicBindingSelected = [&](UINT commandId)
-        {
-            for (const auto &binding : perfDynamicNavBindings_)
-            {
-                if (binding.commandId != commandId)
-                {
-                    continue;
-                }
-
-                if (binding.view == PerformanceView::Gpu)
-                {
-                    return activePerformanceView_ == PerformanceView::Gpu && activeGpuIndex_ == binding.sourceIndex;
-                }
-
-                return activePerformanceView_ == binding.view && activeNetworkInterfaceIndex_ == binding.sourceIndex;
-            }
-
-            return false;
-        };
-
-        const auto setChecked = [](HWND button, bool checked)
-        {
-            if (button)
-            {
-                SendMessageW(button, BM_SETCHECK, checked ? BST_CHECKED : BST_UNCHECKED, 0);
-            }
-        };
-
-        setChecked(perfNavAll_, activePerformanceView_ == PerformanceView::All);
-        setChecked(perfNavCpu_, activePerformanceView_ == PerformanceView::Cpu);
-        setChecked(perfNavMemory_, activePerformanceView_ == PerformanceView::Memory);
-        setChecked(perfNavDisk_, activePerformanceView_ == PerformanceView::Disk);
-        setChecked(perfNavWifi_, isDynamicBindingSelected(kIdPerfNavWifi));
-        setChecked(perfNavEthernet_, isDynamicBindingSelected(kIdPerfNavEthernet));
-        setChecked(perfNavGpu_, isDynamicBindingSelected(kIdPerfNavGpu));
-        setChecked(perfCpuModeSingle_, cpuGraphMode_ == CpuGraphMode::Single);
-        setChecked(perfCpuModePerCore_, cpuGraphMode_ == CpuGraphMode::PerCore);
-
-        for (size_t i = 0; i < perfNavExtraButtons_.size(); ++i)
-        {
-            const UINT commandId = static_cast<UINT>(GetDlgCtrlID(perfNavExtraButtons_[i]));
-            setChecked(perfNavExtraButtons_[i], isDynamicBindingSelected(commandId));
-        }
-    }
-
-    const MainWindow::NetworkInterfacePerf *MainWindow::GetActiveNetworkInterface() const
-    {
-        const bool wifiView = activePerformanceView_ == PerformanceView::Wifi;
-        const bool ethernetView = activePerformanceView_ == PerformanceView::Ethernet;
-        if (!wifiView && !ethernetView)
-        {
-            return nullptr;
-        }
-
-        const auto matchesView = [&](const NetworkInterfacePerf &iface)
-        {
-            return wifiView ? (iface.ifType == IF_TYPE_IEEE80211) : (iface.ifType != IF_TYPE_IEEE80211);
-        };
-
-        if (activeNetworkInterfaceIndex_ < networkInterfaces_.size())
-        {
-            const auto &candidate = networkInterfaces_[activeNetworkInterfaceIndex_];
-            if (matchesView(candidate))
-            {
-                return &candidate;
-            }
-        }
-
-        for (const auto &iface : networkInterfaces_)
-        {
-            if (matchesView(iface))
-            {
-                return &iface;
-            }
-        }
-
-        return nullptr;
-    }
-
-    const MainWindow::GpuPerf *MainWindow::GetActiveGpu() const
-    {
-        if (gpuDevices_.empty())
-        {
-            return nullptr;
-        }
-
-        if (activeGpuIndex_ < gpuDevices_.size())
-        {
-            return &gpuDevices_[activeGpuIndex_];
-        }
-
-        return &gpuDevices_.front();
-    }
-
-    void MainWindow::NormalizeDynamicPerformanceSelection()
-    {
-        if (activePerformanceView_ == PerformanceView::Wifi || activePerformanceView_ == PerformanceView::Ethernet)
-        {
-            const auto *iface = GetActiveNetworkInterface();
-            if (!iface)
-            {
-                activePerformanceView_ = PerformanceView::All;
-                activeNetworkInterfaceIndex_ = 0;
-            }
-            else
-            {
-                activeNetworkInterfaceIndex_ = static_cast<size_t>(iface - networkInterfaces_.data());
-            }
-        }
-
-        if (activePerformanceView_ == PerformanceView::Gpu)
-        {
-            const auto *gpu = GetActiveGpu();
-            if (!gpu)
-            {
-                activePerformanceView_ = PerformanceView::All;
-                activeGpuIndex_ = 0;
-            }
-            else
-            {
-                activeGpuIndex_ = static_cast<size_t>(gpu - gpuDevices_.data());
-            }
-        }
-    }
-
-    bool MainWindow::HandleDynamicPerformanceSubviewCommand(UINT id)
-    {
-        for (const auto &binding : perfDynamicNavBindings_)
-        {
-            if (binding.commandId != id)
-            {
-                continue;
-            }
-
-            const bool viewChanged = activePerformanceView_ != binding.view;
-            bool indexChanged = false;
-            if (binding.view == PerformanceView::Gpu)
-            {
-                indexChanged = activeGpuIndex_ != binding.sourceIndex;
-                activeGpuIndex_ = binding.sourceIndex;
-            }
-            else
-            {
-                indexChanged = activeNetworkInterfaceIndex_ != binding.sourceIndex;
-                activeNetworkInterfaceIndex_ = binding.sourceIndex;
-            }
-
-            if (viewChanged)
-            {
-                SetActivePerformanceView(binding.view);
-            }
-            else if (indexChanged)
-            {
-                NormalizeDynamicPerformanceSelection();
-                UpdatePerformanceSubviewSelection();
-                if (activeSection_ == Section::Performance)
-                {
-                    RefreshPerformancePanel();
-                }
-            }
-
-            return true;
-        }
-
-        return false;
-    }
-
-    void MainWindow::RebuildPerformanceSubviewNavigation()
-    {
-        if (!hwnd_ || !perfNavPanel_)
-        {
-            return;
-        }
-
-        std::vector<PerformanceSubviewBinding> desiredBindings;
-        size_t wifiIndex = 0;
-        size_t ethernetIndex = 0;
-        size_t otherIndex = 0;
-
-        for (size_t ifaceIndex = 0; ifaceIndex < networkInterfaces_.size(); ++ifaceIndex)
-        {
-            const auto &iface = networkInterfaces_[ifaceIndex];
-
-            PerformanceSubviewBinding binding{};
-            binding.view = iface.ifType == IF_TYPE_IEEE80211 ? PerformanceView::Wifi : PerformanceView::Ethernet;
-            binding.sourceIndex = ifaceIndex;
-
-            std::wstring prefix;
-            if (iface.ifType == IF_TYPE_IEEE80211)
-            {
-                prefix = L"Wi-Fi " + std::to_wstring(wifiIndex++);
-            }
-            else if (iface.ifType == IF_TYPE_ETHERNET_CSMACD)
-            {
-                prefix = L"Ethernet " + std::to_wstring(ethernetIndex++);
-            }
-            else
-            {
-                prefix = L"Network " + std::to_wstring(otherIndex++);
-            }
-
-            if (!iface.adapterName.empty() && iface.adapterName != L"N/A")
-            {
-                binding.label = prefix + L" | " + iface.adapterName;
-            }
-            else
-            {
-                binding.label = prefix;
-            }
-
-            desiredBindings.push_back(std::move(binding));
-        }
-
-        for (size_t gpuIndex = 0; gpuIndex < gpuDevices_.size(); ++gpuIndex)
-        {
-            PerformanceSubviewBinding binding{};
-            binding.view = PerformanceView::Gpu;
-            binding.sourceIndex = gpuIndex;
-            binding.label = L"GPU " + std::to_wstring(gpuIndex + 1);
-            desiredBindings.push_back(std::move(binding));
-        }
-
-        std::wstringstream signatureBuilder;
-        signatureBuilder << desiredBindings.size() << L"|";
-        for (const auto &binding : desiredBindings)
-        {
-            signatureBuilder << static_cast<int>(binding.view) << L":" << binding.sourceIndex << L":" << binding.label << L";";
-        }
-
-        const std::wstring nextSignature = signatureBuilder.str();
-        if (nextSignature == perfDynamicNavSignature_)
-        {
-            NormalizeDynamicPerformanceSelection();
-            UpdatePerformanceSubviewSelection();
-            return;
-        }
-
-        for (HWND button : perfNavExtraButtons_)
-        {
-            if (button)
-            {
-                DestroyWindow(button);
-            }
-        }
-        perfNavExtraButtons_.clear();
-        perfDynamicNavBindings_.clear();
-
-        const HWND staticDynamicButtons[3] = {perfNavWifi_, perfNavEthernet_, perfNavGpu_};
-        const UINT staticDynamicIds[3] = {
-            static_cast<UINT>(kIdPerfNavWifi),
-            static_cast<UINT>(kIdPerfNavEthernet),
-            static_cast<UINT>(kIdPerfNavGpu)};
-
-        perfStaticDynamicButtonCount_ = (std::min)(static_cast<size_t>(3), desiredBindings.size());
-
-        for (size_t i = 0; i < 3; ++i)
-        {
-            if (i < desiredBindings.size())
-            {
-                SetWindowTextW(staticDynamicButtons[i], desiredBindings[i].label.c_str());
-
-                PerformanceSubviewBinding mapped = desiredBindings[i];
-                mapped.commandId = staticDynamicIds[i];
-                perfDynamicNavBindings_.push_back(std::move(mapped));
-            }
-            else
-            {
-                SetWindowTextW(staticDynamicButtons[i], L"");
-            }
-        }
-
-        const int maxExtraButtons = kIdPerfNavDynamicMax - kIdPerfNavDynamicBase + 1;
-        for (size_t i = 3; i < desiredBindings.size(); ++i)
-        {
-            const int dynamicOrdinal = static_cast<int>(i - 3);
-            if (dynamicOrdinal >= maxExtraButtons)
-            {
-                break;
-            }
-
-            const int commandId = kIdPerfNavDynamicBase + dynamicOrdinal;
-            HWND button = CreateWindowExW(
-                0,
-                L"BUTTON",
-                desiredBindings[i].label.c_str(),
-                WS_CHILD | WS_TABSTOP | BS_AUTORADIOBUTTON | BS_PUSHLIKE,
-                0,
-                0,
-                0,
-                0,
-                hwnd_,
-                MenuId(commandId),
-                instance_,
-                nullptr);
-
-            if (!button)
-            {
-                continue;
-            }
-
-            SendMessageW(button, WM_SETFONT, reinterpret_cast<WPARAM>(uiBoldFont_), TRUE);
-            perfNavExtraButtons_.push_back(button);
-
-            PerformanceSubviewBinding mapped = desiredBindings[i];
-            mapped.commandId = static_cast<UINT>(commandId);
-            perfDynamicNavBindings_.push_back(std::move(mapped));
-        }
-
-        perfDynamicNavSignature_ = nextSignature;
-        NormalizeDynamicPerformanceSelection();
-
-        if (activeSection_ == Section::Performance)
-        {
-            LayoutControls();
-        }
-        else
-        {
-            ApplySectionVisibility();
-        }
-
-        UpdatePerformanceSubviewSelection();
-    }
-
     void MainWindow::SetActiveSection(Section section)
     {
         if (activeSection_ == section)
@@ -2824,7 +2261,7 @@ namespace utm::ui
         }
 
         activeSection_ = section;
-        UpdateSidebarSelection();
+        sidebarNavigationComponent_.UpdateSelection();
         UpdatePerformanceSubviewSelection();
         LayoutControls();
 
@@ -2836,65 +2273,6 @@ namespace utm::ui
         {
             RebuildPerformanceSubviewNavigation();
             RefreshPerformancePanel();
-        }
-    }
-
-    void MainWindow::UpdateSidebarSelection()
-    {
-        int checked = kIdNavProcesses;
-        switch (activeSection_)
-        {
-        case Section::Processes:
-            checked = kIdNavProcesses;
-            break;
-        case Section::Performance:
-            checked = kIdNavPerformance;
-            break;
-        case Section::Network:
-            checked = kIdNavNetwork;
-            break;
-        case Section::Hardware:
-            checked = kIdNavHardware;
-            break;
-        case Section::Services:
-            checked = kIdNavServices;
-            break;
-        case Section::StartupApps:
-            checked = kIdNavStartupApps;
-            break;
-        case Section::Users:
-            checked = kIdNavUsers;
-            break;
-        case Section::QuickKillTools:
-            checked = kIdNavQuickTools;
-            break;
-        }
-
-        CheckRadioButton(hwnd_, kIdNavProcesses, kIdNavQuickTools, checked);
-    }
-
-    std::wstring MainWindow::SectionTitleText() const
-    {
-        switch (activeSection_)
-        {
-        case Section::Processes:
-            return L"Processes";
-        case Section::Performance:
-            return L"Performance";
-        case Section::Network:
-            return L"Network";
-        case Section::Hardware:
-            return L"Hardware";
-        case Section::Services:
-            return L"Services";
-        case Section::StartupApps:
-            return L"Startup Apps";
-        case Section::Users:
-            return L"Users";
-        case Section::QuickKillTools:
-            return L"Quick Kill Tools";
-        default:
-            return L"Ultimate Task Manager";
         }
     }
 
@@ -4763,398 +4141,6 @@ namespace utm::ui
         SelectObject(dc, oldBitmap);
         DeleteObject(bitmap);
         DeleteDC(dc);
-    }
-
-    void MainWindow::HandleSnapshotUpdate()
-    {
-        snapshot_ = engine_.GetSnapshot();
-        ApplyFilterAndSort();
-        UpdatePerformanceMetrics();
-        RefreshPerformancePanel();
-
-        if (activeSection_ == Section::Processes)
-        {
-            RefreshProcessView();
-        }
-
-        std::wstringstream status;
-        status << L"Processes: " << snapshot_.processes.size()
-               << L" | Elevated: " << (snapshot_.runtime.isElevated ? L"Yes" : L"No")
-               << L" | SeDebug: " << (snapshot_.runtime.seDebugEnabled ? L"Enabled" : L"Unavailable");
-
-        ShowStatusText(status.str());
-    }
-
-    void MainWindow::RefreshProcessView()
-    {
-        if (!processList_)
-        {
-            return;
-        }
-
-        const int itemCount = static_cast<int>(visibleRows_.size());
-        if (itemCount != lastVisibleCount_)
-        {
-            ListView_SetItemCountEx(processList_, itemCount, LVSICF_NOINVALIDATEALL | LVSICF_NOSCROLL);
-            lastVisibleCount_ = itemCount;
-        }
-
-        if (activeSection_ != Section::Processes || !IsWindowVisible(processList_))
-        {
-            return;
-        }
-
-        RedrawWindow(processList_, nullptr, nullptr, RDW_INVALIDATE | RDW_NOERASE);
-    }
-
-    void MainWindow::ApplyFilterAndSort()
-    {
-        visibleRows_.clear();
-        visibleRows_.reserve(snapshot_.processes.size());
-
-        for (size_t i = 0; i < snapshot_.processes.size(); ++i)
-        {
-            const auto &p = snapshot_.processes[i];
-
-            bool pass = true;
-            if (!filterText_.empty())
-            {
-                pass = ContainsInsensitive(p.imageName, filterText_);
-                if (!pass)
-                {
-                    const std::wstring pidText = std::to_wstring(p.pid);
-                    pass = ContainsInsensitive(pidText, filterText_);
-                }
-            }
-
-            if (pass)
-            {
-                visibleRows_.push_back(i);
-            }
-        }
-
-        auto cmp = [&](size_t a, size_t b)
-        {
-            const auto &left = snapshot_.processes[a];
-            const auto &right = snapshot_.processes[b];
-
-            auto compare = [&](auto lv, auto rv)
-            {
-                if (lv < rv)
-                {
-                    return -1;
-                }
-                if (lv > rv)
-                {
-                    return 1;
-                }
-                return 0;
-            };
-
-            int result = 0;
-            switch (sortColumn_)
-            {
-            case SortColumn::Name:
-                result = compare(ToLower(left.imageName), ToLower(right.imageName));
-                break;
-            case SortColumn::Pid:
-                result = compare(left.pid, right.pid);
-                break;
-            case SortColumn::Cpu:
-                result = compare(left.cpuPercent, right.cpuPercent);
-                break;
-            case SortColumn::WorkingSet:
-                result = compare(left.workingSetBytes, right.workingSetBytes);
-                break;
-            case SortColumn::PrivateBytes:
-                result = compare(left.privateBytes, right.privateBytes);
-                break;
-            case SortColumn::Threads:
-                result = compare(left.threadCount, right.threadCount);
-                break;
-            case SortColumn::Handles:
-                result = compare(left.handleCount, right.handleCount);
-                break;
-            case SortColumn::ParentPid:
-                result = compare(left.parentPid, right.parentPid);
-                break;
-            case SortColumn::Priority:
-                result = compare(left.priorityClass, right.priorityClass);
-                break;
-            case SortColumn::ReadBytes:
-                result = compare(left.readBytes, right.readBytes);
-                break;
-            case SortColumn::WriteBytes:
-                result = compare(left.writeBytes, right.writeBytes);
-                break;
-            }
-
-            if (result == 0)
-            {
-                result = compare(left.pid, right.pid);
-            }
-
-            return sortAscending_ ? (result < 0) : (result > 0);
-        };
-
-        std::sort(visibleRows_.begin(), visibleRows_.end(), cmp);
-    }
-
-    std::uint32_t MainWindow::GetSelectedPid() const
-    {
-        const int selected = ListView_GetNextItem(processList_, -1, LVNI_SELECTED);
-        if (selected < 0 || static_cast<size_t>(selected) >= visibleRows_.size())
-        {
-            return 0;
-        }
-
-        const size_t snapshotIndex = visibleRows_[selected];
-        if (snapshotIndex >= snapshot_.processes.size())
-        {
-            return 0;
-        }
-
-        return snapshot_.processes[snapshotIndex].pid;
-    }
-
-    void MainWindow::ShowProcessContextMenu(POINT screenPoint)
-    {
-        contextPid_ = GetSelectedPid();
-        if (contextPid_ == 0)
-        {
-            return;
-        }
-
-        HMENU menu = CreatePopupMenu();
-        HMENU priorityMenu = CreatePopupMenu();
-        HMENU affinityMenu = CreatePopupMenu();
-
-        AppendMenuW(menu, MF_STRING, kCommandEndTask, L"End Task");
-        AppendMenuW(menu, MF_STRING, kCommandEndTree, L"End Process Tree");
-        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(menu, MF_STRING, kCommandSuspend, L"Suspend");
-        AppendMenuW(menu, MF_STRING, kCommandResume, L"Resume");
-        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-
-        AppendMenuW(priorityMenu, MF_STRING, kCommandPriorityIdle, L"Idle");
-        AppendMenuW(priorityMenu, MF_STRING, kCommandPriorityBelowNormal, L"Below Normal");
-        AppendMenuW(priorityMenu, MF_STRING, kCommandPriorityNormal, L"Normal");
-        AppendMenuW(priorityMenu, MF_STRING, kCommandPriorityAboveNormal, L"Above Normal");
-        AppendMenuW(priorityMenu, MF_STRING, kCommandPriorityHigh, L"High");
-        AppendMenuW(priorityMenu, MF_STRING, kCommandPriorityRealtime, L"Realtime");
-
-        AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(priorityMenu), L"Set Priority");
-
-        DWORD_PTR processMask = 0;
-        DWORD_PTR systemMask = 0;
-        GetProcessAffinityMask(GetCurrentProcess(), &processMask, &systemMask);
-
-        AppendMenuW(affinityMenu, MF_STRING, kCommandAffinityAll, L"All Cores");
-        AppendMenuW(affinityMenu, MF_STRING, kCommandAffinityCore0, L"Core 0");
-
-        if ((systemMask & 0x2) != 0)
-        {
-            AppendMenuW(affinityMenu, MF_STRING, kCommandAffinityCore1, L"Core 1");
-        }
-
-        AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(affinityMenu), L"Set Affinity");
-
-        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(menu, MF_STRING, kCommandOpenLocation, L"Open File Location");
-        AppendMenuW(menu, MF_STRING, kCommandProperties, L"Properties");
-
-        TrackPopupMenu(menu, TPM_RIGHTBUTTON, screenPoint.x, screenPoint.y, 0, hwnd_, nullptr);
-        DestroyMenu(menu);
-    }
-
-    void MainWindow::ExecuteProcessCommand(UINT commandId)
-    {
-        if (contextPid_ == 0)
-        {
-            contextPid_ = GetSelectedPid();
-        }
-
-        if (contextPid_ == 0)
-        {
-            return;
-        }
-
-        std::wstring error;
-        bool ok = false;
-
-        switch (commandId)
-        {
-        case kCommandEndTask:
-            ok = tools::process::ProcessActions::SmartTerminate(contextPid_, 1200, error);
-            break;
-        case kCommandEndTree:
-            ok = tools::process::ProcessActions::TerminateTree(contextPid_, error);
-            break;
-        case kCommandSuspend:
-            ok = tools::process::ProcessActions::Suspend(contextPid_, error);
-            break;
-        case kCommandResume:
-            ok = tools::process::ProcessActions::Resume(contextPid_, error);
-            break;
-        case kCommandOpenLocation:
-            ok = tools::process::ProcessActions::OpenFileLocation(contextPid_, error);
-            break;
-        case kCommandProperties:
-            ok = tools::process::ProcessActions::OpenProperties(contextPid_, error);
-            break;
-        case kCommandPriorityIdle:
-            ok = tools::process::ProcessActions::SetPriority(contextPid_, IDLE_PRIORITY_CLASS, error);
-            break;
-        case kCommandPriorityBelowNormal:
-            ok = tools::process::ProcessActions::SetPriority(contextPid_, BELOW_NORMAL_PRIORITY_CLASS, error);
-            break;
-        case kCommandPriorityNormal:
-            ok = tools::process::ProcessActions::SetPriority(contextPid_, NORMAL_PRIORITY_CLASS, error);
-            break;
-        case kCommandPriorityAboveNormal:
-            ok = tools::process::ProcessActions::SetPriority(contextPid_, ABOVE_NORMAL_PRIORITY_CLASS, error);
-            break;
-        case kCommandPriorityHigh:
-            ok = tools::process::ProcessActions::SetPriority(contextPid_, HIGH_PRIORITY_CLASS, error);
-            break;
-        case kCommandPriorityRealtime:
-            if (MessageBoxW(hwnd_, L"Realtime priority can destabilize the system. Continue?", L"Confirm", MB_ICONWARNING | MB_YESNO) == IDYES)
-            {
-                ok = tools::process::ProcessActions::SetPriority(contextPid_, REALTIME_PRIORITY_CLASS, error);
-            }
-            break;
-        case kCommandAffinityAll:
-        {
-            DWORD_PTR processMask = 0;
-            DWORD_PTR systemMask = 0;
-            GetProcessAffinityMask(GetCurrentProcess(), &processMask, &systemMask);
-            ok = tools::process::ProcessActions::SetAffinity(contextPid_, systemMask, error);
-            break;
-        }
-        case kCommandAffinityCore0:
-            ok = tools::process::ProcessActions::SetAffinity(contextPid_, 0x1, error);
-            break;
-        case kCommandAffinityCore1:
-            ok = tools::process::ProcessActions::SetAffinity(contextPid_, 0x2, error);
-            break;
-        default:
-            break;
-        }
-
-        if (!ok && !error.empty())
-        {
-            MessageBoxW(hwnd_, error.c_str(), L"Operation Failed", MB_OK | MB_ICONERROR);
-        }
-    }
-
-    void MainWindow::ShowStatusText(const std::wstring &text)
-    {
-        if (statusText_)
-        {
-            SetWindowTextW(statusText_, text.c_str());
-        }
-    }
-
-    std::wstring MainWindow::CellText(size_t row, int subItem) const
-    {
-        if (row >= visibleRows_.size())
-        {
-            return L"";
-        }
-
-        const size_t idx = visibleRows_[row];
-        if (idx >= snapshot_.processes.size())
-        {
-            return L"";
-        }
-
-        const auto &p = snapshot_.processes[idx];
-
-        switch (subItem)
-        {
-        case 0:
-            return p.imageName;
-        case 1:
-            return std::to_wstring(p.pid);
-        case 2:
-            return FormatCpu(p.cpuPercent);
-        case 3:
-            return FormatBytes(p.workingSetBytes);
-        case 4:
-            return FormatBytes(p.privateBytes);
-        case 5:
-            return std::to_wstring(p.threadCount);
-        case 6:
-            return std::to_wstring(p.handleCount);
-        case 7:
-            return std::to_wstring(p.parentPid);
-        case 8:
-            return PriorityClassToText(p.priorityClass);
-        case 9:
-            return FormatBytes(p.readBytes);
-        case 10:
-            return FormatBytes(p.writeBytes);
-        default:
-            return L"";
-        }
-    }
-
-    std::wstring MainWindow::FormatBytes(std::uint64_t bytes)
-    {
-        constexpr double kb = 1024.0;
-        constexpr double mb = kb * 1024.0;
-        constexpr double gb = mb * 1024.0;
-
-        wchar_t buffer[64]{};
-
-        if (bytes >= static_cast<std::uint64_t>(gb))
-        {
-            StringCchPrintfW(buffer, sizeof(buffer) / sizeof(buffer[0]), L"%.2f GB", bytes / gb);
-            return buffer;
-        }
-
-        if (bytes >= static_cast<std::uint64_t>(mb))
-        {
-            StringCchPrintfW(buffer, sizeof(buffer) / sizeof(buffer[0]), L"%.2f MB", bytes / mb);
-            return buffer;
-        }
-
-        if (bytes >= static_cast<std::uint64_t>(kb))
-        {
-            StringCchPrintfW(buffer, sizeof(buffer) / sizeof(buffer[0]), L"%.2f KB", bytes / kb);
-            return buffer;
-        }
-
-        StringCchPrintfW(buffer, sizeof(buffer) / sizeof(buffer[0]), L"%llu B", bytes);
-        return buffer;
-    }
-
-    std::wstring MainWindow::FormatCpu(double cpu)
-    {
-        wchar_t buffer[32]{};
-        StringCchPrintfW(buffer, sizeof(buffer) / sizeof(buffer[0]), L"%.1f", cpu);
-        return buffer;
-    }
-
-    std::wstring MainWindow::PriorityClassToText(std::uint32_t priorityClass)
-    {
-        switch (priorityClass)
-        {
-        case IDLE_PRIORITY_CLASS:
-            return L"Idle";
-        case BELOW_NORMAL_PRIORITY_CLASS:
-            return L"Below Normal";
-        case NORMAL_PRIORITY_CLASS:
-            return L"Normal";
-        case ABOVE_NORMAL_PRIORITY_CLASS:
-            return L"Above Normal";
-        case HIGH_PRIORITY_CLASS:
-            return L"High";
-        case REALTIME_PRIORITY_CLASS:
-            return L"Realtime";
-        default:
-            return L"Unknown";
-        }
     }
 
 } // namespace utm::ui

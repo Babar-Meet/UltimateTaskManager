@@ -2,6 +2,11 @@
 
 #include "core/engine/MonitorEngine.h"
 #include "core/model/ProcessSnapshot.h"
+#include "ui/PerformancePanel.h"
+#include "ui/ProcessListView.h"
+#include "ui/QuickToolsPanel.h"
+#include "ui/SidebarNavigation.h"
+#include "ui/StatusBar.h"
 
 #include <windows.h>
 #include <pdh.h>
@@ -29,6 +34,12 @@ namespace utm::ui
         int RunMessageLoop();
 
     private:
+        friend class SidebarNavigation;
+        friend class ProcessListView;
+        friend class PerformancePanel;
+        friend class QuickToolsPanel;
+        friend class StatusBar;
+
         enum class SortColumn
         {
             Name,
@@ -87,8 +98,6 @@ namespace utm::ui
         void LayoutControls();
         void ApplySectionVisibility();
         void SetActiveSection(Section section);
-        void UpdateSidebarSelection();
-        std::wstring SectionTitleText() const;
         void SetActivePerformanceView(PerformanceView view);
         void SetCpuGraphMode(CpuGraphMode mode);
         void UpdatePerformanceSubviewSelection();
@@ -165,6 +174,7 @@ namespace utm::ui
 
         void ShowProcessContextMenu(POINT screenPoint);
         void ExecuteProcessCommand(UINT commandId);
+        bool HandleQuickToolsCommand(UINT id);
 
         void ShowStatusText(const std::wstring &text);
 
@@ -175,6 +185,12 @@ namespace utm::ui
 
         HINSTANCE instance_ = nullptr;
         HWND hwnd_ = nullptr;
+
+        SidebarNavigation sidebarNavigationComponent_{};
+        ProcessListView processListViewComponent_{};
+        PerformancePanel performancePanelComponent_{};
+        QuickToolsPanel quickToolsPanelComponent_{};
+        StatusBar statusBarComponent_{};
 
         HWND sidebar_ = nullptr;
         HWND sidebarTitle_ = nullptr;
