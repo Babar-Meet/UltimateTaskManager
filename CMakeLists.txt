@@ -34,6 +34,7 @@ target_link_libraries(UltimateTaskManager PRIVATE
     dxgi
     gdi32
     iphlpapi
+    pdh
     psapi
     rstrtmgr
     setupapi

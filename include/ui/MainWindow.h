@@ -4,7 +4,9 @@
 #include "core/model/ProcessSnapshot.h"
 
 #include <windows.h>
+#include <pdh.h>
 
+#include <deque>
 #include <string>
 #include <vector>
 
@@ -65,6 +67,12 @@ namespace utm::ui
         void SetActiveSection(Section section);
         void UpdateSidebarSelection();
         std::wstring SectionTitleText() const;
+        void UpdatePerformanceMetrics();
+        void RefreshPerformancePanel();
+        void DrawPerformanceGraph(const DRAWITEMSTRUCT *draw) const;
+        void DrawCoreGrid(const DRAWITEMSTRUCT *draw) const;
+        static void PushHistory(std::deque<double> &history, double value, size_t maxSamples = 90);
+        double QueryGpuUsagePercent();
 
         void HandleSnapshotUpdate();
         void RefreshProcessView();
@@ -101,6 +109,12 @@ namespace utm::ui
         HWND filterEdit_ = nullptr;
         HWND processList_ = nullptr;
         HWND performancePlaceholder_ = nullptr;
+        HWND perfCoreGrid_ = nullptr;
+        HWND perfGraphCpu_ = nullptr;
+        HWND perfGraphMemory_ = nullptr;
+        HWND perfGraphGpu_ = nullptr;
+        HWND perfGraphUpload_ = nullptr;
+        HWND perfGraphDownload_ = nullptr;
         HWND networkPlaceholder_ = nullptr;
         HWND hardwarePlaceholder_ = nullptr;
         HWND servicesPlaceholder_ = nullptr;
@@ -138,6 +152,37 @@ namespace utm::ui
         std::wstring filterText_;
         std::vector<size_t> visibleRows_;
         int lastVisibleCount_ = -1;
+
+        std::vector<double> performanceCoreUsage_;
+        std::vector<std::deque<double>> performanceCoreHistory_;
+        std::vector<std::uint64_t> previousCpuIdle_;
+        std::vector<std::uint64_t> previousCpuTotal_;
+        bool cpuSamplingReady_ = false;
+
+        std::uint64_t previousNetworkIn_ = 0;
+        std::uint64_t previousNetworkOut_ = 0;
+        std::uint64_t previousNetworkTickMs_ = 0;
+        bool networkSamplingReady_ = false;
+
+        double totalCpuPercent_ = 0.0;
+        double memoryPercent_ = 0.0;
+        double memoryUsedGb_ = 0.0;
+        double memoryTotalGb_ = 0.0;
+        double gpuPercent_ = 0.0;
+        double uploadMbps_ = 0.0;
+        double downloadMbps_ = 0.0;
+        double uploadScaleMbps_ = 6.0;
+        double downloadScaleMbps_ = 6.0;
+        bool gpuCounterReady_ = false;
+
+        std::deque<double> cpuHistory_;
+        std::deque<double> memoryHistory_;
+        std::deque<double> gpuHistory_;
+        std::deque<double> uploadHistory_;
+        std::deque<double> downloadHistory_;
+
+        PDH_HQUERY gpuQuery_ = nullptr;
+        PDH_HCOUNTER gpuCounter_ = nullptr;
 
         SortColumn sortColumn_ = SortColumn::Cpu;
         bool sortAscending_ = false;

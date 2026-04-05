@@ -2,6 +2,7 @@
 
 #include "ui/MainWindow.h"
 
+#include "system/ntapi/NtApi.h"
 #include "tools/process/ProcessActions.h"
 #include "util/logging/Logger.h"
 
@@ -17,6 +18,7 @@
 #include <cstdlib>
 #include <cwctype>
 #include <filesystem>
+#include <iomanip>
 #include <set>
 #include <sstream>
 #include <unordered_map>
@@ -77,6 +79,13 @@ namespace
     constexpr int kIdQuickToolBrowseFile = 41005;
     constexpr int kIdQuickToolBrowseFolder = 41006;
 
+    constexpr int kIdPerfCoreGrid = 43000;
+    constexpr int kIdPerfGraphCpu = 43001;
+    constexpr int kIdPerfGraphMemory = 43002;
+    constexpr int kIdPerfGraphGpu = 43003;
+    constexpr int kIdPerfGraphUpload = 43004;
+    constexpr int kIdPerfGraphDownload = 43005;
+
     constexpr UINT kCommandEndTask = 40001;
     constexpr UINT kCommandEndTree = 40002;
     constexpr UINT kCommandSuspend = 40003;
@@ -94,6 +103,50 @@ namespace
     constexpr UINT kCommandAffinityAll = 40200;
     constexpr UINT kCommandAffinityCore0 = 40201;
     constexpr UINT kCommandAffinityCore1 = 40202;
+
+    constexpr double kBytesPerGiB = 1024.0 * 1024.0 * 1024.0;
+
+    COLORREF BlendColor(COLORREF a, COLORREF b, double mix)
+    {
+        mix = (std::clamp)(mix, 0.0, 1.0);
+
+        const auto blend = [&](BYTE from, BYTE to)
+        {
+            const double value = static_cast<double>(from) +
+                                 (static_cast<double>(to) - static_cast<double>(from)) * mix;
+            return static_cast<BYTE>((std::clamp)(value, 0.0, 255.0));
+        };
+
+        return RGB(
+            blend(GetRValue(a), GetRValue(b)),
+            blend(GetGValue(a), GetGValue(b)),
+            blend(GetBValue(a), GetBValue(b)));
+    }
+
+    std::wstring FormatNumber(double value, int decimals)
+    {
+        std::wostringstream out;
+        out << std::fixed << std::setprecision(decimals) << value;
+        return out.str();
+    }
+
+    std::wstring FormatAxisValue(double value, const wchar_t *unit)
+    {
+        int decimals = 0;
+        if (value < 10.0)
+        {
+            decimals = 1;
+        }
+
+        std::wstring text = FormatNumber(value, decimals);
+        if (unit && unit[0] != L'\0')
+        {
+            text += L" ";
+            text += unit;
+        }
+
+        return text;
+    }
 
     HMENU MenuId(int id)
     {
@@ -424,6 +477,20 @@ namespace utm::ui
         uiTitleFont_ = CreateFontW(-24, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
                                    DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                    CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+
+        if (PdhOpenQueryW(nullptr, 0, &gpuQuery_) == ERROR_SUCCESS)
+        {
+            if (PdhAddEnglishCounterW(gpuQuery_, L"\\GPU Engine(*)\\Utilization Percentage", 0, &gpuCounter_) == ERROR_SUCCESS)
+            {
+                gpuCounterReady_ = PdhCollectQueryData(gpuQuery_) == ERROR_SUCCESS;
+            }
+            else
+            {
+                PdhCloseQuery(gpuQuery_);
+                gpuQuery_ = nullptr;
+                gpuCounter_ = nullptr;
+            }
+        }
     }
 
     MainWindow::~MainWindow()
@@ -458,6 +525,13 @@ namespace utm::ui
         if (uiTitleFont_)
         {
             DeleteObject(uiTitleFont_);
+        }
+
+        if (gpuQuery_)
+        {
+            PdhCloseQuery(gpuQuery_);
+            gpuQuery_ = nullptr;
+            gpuCounter_ = nullptr;
         }
     }
 
@@ -999,6 +1073,13 @@ namespace utm::ui
                 return reinterpret_cast<LRESULT>(backgroundBrush_);
             }
 
+            if (control == performancePlaceholder_)
+            {
+                SetBkColor(dc, kMainBackgroundColor);
+                SetTextColor(dc, RGB(40, 57, 82));
+                return reinterpret_cast<LRESULT>(backgroundBrush_);
+            }
+
             if (control == quickToolsHint_ ||
                 control == performancePlaceholder_ ||
                 control == networkPlaceholder_ ||
@@ -1070,6 +1151,33 @@ namespace utm::ui
             GetClientRect(hwnd_, &rc);
             FillRect(dc, &rc, backgroundBrush_);
             return 1;
+        }
+
+        case WM_DRAWITEM:
+        {
+            const auto *draw = reinterpret_cast<const DRAWITEMSTRUCT *>(lParam);
+            if (!draw)
+            {
+                break;
+            }
+
+            if (draw->CtlID == kIdPerfGraphCpu ||
+                draw->CtlID == kIdPerfGraphMemory ||
+                draw->CtlID == kIdPerfGraphGpu ||
+                draw->CtlID == kIdPerfGraphUpload ||
+                draw->CtlID == kIdPerfGraphDownload)
+            {
+                DrawPerformanceGraph(draw);
+                return TRUE;
+            }
+
+            if (draw->CtlID == kIdPerfCoreGrid)
+            {
+                DrawCoreGrid(draw);
+                return TRUE;
+            }
+
+            break;
         }
 
         case WM_DESTROY:
@@ -1252,7 +1360,7 @@ namespace utm::ui
         performancePlaceholder_ = CreateWindowExW(
             0,
             L"STATIC",
-            L"Performance graphs and utilization panels are coming next.\r\n\r\nThe layout is ready for CPU, Memory, Disk, and GPU tiles.",
+            L"Live performance metrics",
             WS_CHILD,
             0,
             0,
@@ -1260,6 +1368,43 @@ namespace utm::ui
             0,
             hwnd_,
             MenuId(kIdPerfPlaceholder),
+            instance_,
+            nullptr);
+
+        auto createPerfGraph = [&](int id)
+        {
+            return CreateWindowExW(
+                0,
+                L"STATIC",
+                nullptr,
+                WS_CHILD | SS_OWNERDRAW,
+                0,
+                0,
+                0,
+                0,
+                hwnd_,
+                MenuId(id),
+                instance_,
+                nullptr);
+        };
+
+        perfGraphCpu_ = createPerfGraph(kIdPerfGraphCpu);
+        perfGraphMemory_ = createPerfGraph(kIdPerfGraphMemory);
+        perfGraphGpu_ = createPerfGraph(kIdPerfGraphGpu);
+        perfGraphUpload_ = createPerfGraph(kIdPerfGraphUpload);
+        perfGraphDownload_ = createPerfGraph(kIdPerfGraphDownload);
+
+        perfCoreGrid_ = CreateWindowExW(
+            WS_EX_CLIENTEDGE,
+            L"STATIC",
+            nullptr,
+            WS_CHILD | SS_OWNERDRAW,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdPerfCoreGrid),
             instance_,
             nullptr);
 
@@ -1559,7 +1704,8 @@ namespace utm::ui
 
         if (!sidebarTitle_ || !navProcesses_ || !navPerformance_ || !navNetwork_ || !navHardware_ || !navServices_ || !navStartupApps_ || !navUsers_ || !navQuickTools_ ||
             !sectionTitle_ || !filterLabel_ || !filterEdit_ || !processList_ ||
-            !performancePlaceholder_ || !networkPlaceholder_ || !hardwarePlaceholder_ || !servicesPlaceholder_ || !startupAppsPlaceholder_ || !usersPlaceholder_ ||
+            !performancePlaceholder_ || !perfGraphCpu_ || !perfGraphMemory_ || !perfGraphGpu_ || !perfGraphUpload_ || !perfGraphDownload_ || !perfCoreGrid_ ||
+            !networkPlaceholder_ || !hardwarePlaceholder_ || !servicesPlaceholder_ || !startupAppsPlaceholder_ || !usersPlaceholder_ ||
             !quickToolsTitle_ || !quickToolsHint_ ||
             !quickPortLabel_ || !quickPortEdit_ || !quickKillPortButton_ || !quickPortKillOneButton_ ||
             !quickProcessLabel_ || !quickProcessEdit_ || !quickKillPatternButton_ || !quickProcessKillOneButton_ ||
@@ -1586,6 +1732,7 @@ namespace utm::ui
         applyFont(filterEdit_, uiFont_);
         applyFont(processList_, uiFont_);
         applyFont(performancePlaceholder_, uiFont_);
+        applyFont(perfCoreGrid_, uiFont_);
         applyFont(networkPlaceholder_, uiFont_);
         applyFont(hardwarePlaceholder_, uiFont_);
         applyFont(servicesPlaceholder_, uiFont_);
@@ -1668,6 +1815,28 @@ namespace utm::ui
         MoveWindow(startupAppsPlaceholder_, contentX, bodyTop, contentWidth, bodyHeight, TRUE);
         MoveWindow(usersPlaceholder_, contentX, bodyTop, contentWidth, bodyHeight, TRUE);
 
+        const int perfGap = 8;
+        const int perfGraphHeight = 102;
+        const int perfHalfWidth = (contentWidth - perfGap) / 2;
+        int perfY = bodyTop;
+
+        MoveWindow(performancePlaceholder_, contentX, perfY, contentWidth, 22, TRUE);
+        perfY += 26;
+
+        MoveWindow(perfGraphCpu_, contentX, perfY, perfHalfWidth, perfGraphHeight, TRUE);
+        MoveWindow(perfGraphMemory_, contentX + perfHalfWidth + perfGap, perfY, contentWidth - perfHalfWidth - perfGap, perfGraphHeight, TRUE);
+        perfY += perfGraphHeight + perfGap;
+
+        MoveWindow(perfGraphUpload_, contentX, perfY, perfHalfWidth, perfGraphHeight, TRUE);
+        MoveWindow(perfGraphDownload_, contentX + perfHalfWidth + perfGap, perfY, contentWidth - perfHalfWidth - perfGap, perfGraphHeight, TRUE);
+        perfY += perfGraphHeight + perfGap;
+
+        MoveWindow(perfGraphGpu_, contentX, perfY, contentWidth, perfGraphHeight, TRUE);
+        perfY += perfGraphHeight + perfGap;
+
+        const int coreGridHeight = (std::max)(80, statusY - perfY - kPadding);
+        MoveWindow(perfCoreGrid_, contentX, perfY, contentWidth, coreGridHeight, TRUE);
+
         int quickY = bodyTop + 4;
         MoveWindow(quickToolsTitle_, contentX, quickY, contentWidth, 32, TRUE);
         quickY += 34;
@@ -1722,6 +1891,13 @@ namespace utm::ui
         ShowWindow(processList_, processTab ? SW_SHOW : SW_HIDE);
 
         ShowWindow(performancePlaceholder_, perfTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(perfGraphCpu_, perfTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(perfGraphMemory_, perfTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(perfGraphGpu_, perfTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(perfGraphUpload_, perfTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(perfGraphDownload_, perfTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(perfCoreGrid_, perfTab ? SW_SHOW : SW_HIDE);
+
         ShowWindow(networkPlaceholder_, networkTab ? SW_SHOW : SW_HIDE);
         ShowWindow(hardwarePlaceholder_, hardwareTab ? SW_SHOW : SW_HIDE);
         ShowWindow(servicesPlaceholder_, servicesTab ? SW_SHOW : SW_HIDE);
@@ -1821,10 +1997,764 @@ namespace utm::ui
         }
     }
 
+    void MainWindow::PushHistory(std::deque<double> &history, double value, size_t maxSamples)
+    {
+        history.push_back(value);
+        while (history.size() > maxSamples)
+        {
+            history.pop_front();
+        }
+    }
+
+    double MainWindow::QueryGpuUsagePercent()
+    {
+        if (!gpuCounterReady_ || !gpuQuery_ || !gpuCounter_)
+        {
+            return 0.0;
+        }
+
+        if (PdhCollectQueryData(gpuQuery_) != ERROR_SUCCESS)
+        {
+            return 0.0;
+        }
+
+        DWORD bufferSize = 0;
+        DWORD itemCount = 0;
+        PDH_STATUS status = PdhGetFormattedCounterArrayW(gpuCounter_, PDH_FMT_DOUBLE, &bufferSize, &itemCount, nullptr);
+        if (status != ERROR_SUCCESS && bufferSize == 0)
+        {
+            return 0.0;
+        }
+
+        if (bufferSize == 0 || itemCount == 0)
+        {
+            return 0.0;
+        }
+
+        std::vector<std::uint8_t> buffer(bufferSize);
+        auto *items = reinterpret_cast<PPDH_FMT_COUNTERVALUE_ITEM_W>(buffer.data());
+        status = PdhGetFormattedCounterArrayW(gpuCounter_, PDH_FMT_DOUBLE, &bufferSize, &itemCount, items);
+        if (status != ERROR_SUCCESS)
+        {
+            return 0.0;
+        }
+
+        double total = 0.0;
+        for (DWORD i = 0; i < itemCount; ++i)
+        {
+            if (items[i].FmtValue.CStatus == ERROR_SUCCESS && items[i].FmtValue.doubleValue > 0.0)
+            {
+                total += items[i].FmtValue.doubleValue;
+            }
+        }
+
+        return (std::clamp)(total, 0.0, 100.0);
+    }
+
+    void MainWindow::UpdatePerformanceMetrics()
+    {
+        const DWORD detectedCoreCount = GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
+        const DWORD coreCount = detectedCoreCount > 0 ? detectedCoreCount : 1;
+
+        std::vector<SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION> cpuPerf(coreCount);
+        ULONG returned = 0;
+        const NTSTATUS status = utm::system::ntapi::NtApi::Instance().QuerySystemInformation(
+            SystemProcessorPerformanceInformation,
+            cpuPerf.data(),
+            static_cast<ULONG>(cpuPerf.size() * sizeof(SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION)),
+            &returned);
+
+        if (NT_SUCCESS(status))
+        {
+            if (performanceCoreUsage_.size() != coreCount)
+            {
+                performanceCoreUsage_.assign(coreCount, 0.0);
+                performanceCoreHistory_.assign(coreCount, {});
+                previousCpuIdle_.assign(coreCount, 0);
+                previousCpuTotal_.assign(coreCount, 0);
+                cpuSamplingReady_ = false;
+            }
+
+            double total = 0.0;
+            for (DWORD i = 0; i < coreCount; ++i)
+            {
+                const std::uint64_t idle = static_cast<std::uint64_t>(cpuPerf[i].IdleTime.QuadPart);
+                const std::uint64_t totalTime = static_cast<std::uint64_t>(cpuPerf[i].KernelTime.QuadPart + cpuPerf[i].UserTime.QuadPart);
+
+                double coreUsage = 0.0;
+                if (cpuSamplingReady_)
+                {
+                    const std::uint64_t idleDelta = idle >= previousCpuIdle_[i] ? idle - previousCpuIdle_[i] : 0;
+                    const std::uint64_t totalDelta = totalTime >= previousCpuTotal_[i] ? totalTime - previousCpuTotal_[i] : 0;
+
+                    if (totalDelta > 0)
+                    {
+                        const std::uint64_t busyDelta = totalDelta > idleDelta ? totalDelta - idleDelta : 0;
+                        coreUsage = (static_cast<double>(busyDelta) * 100.0) / static_cast<double>(totalDelta);
+                    }
+                }
+
+                coreUsage = (std::clamp)(coreUsage, 0.0, 100.0);
+                performanceCoreUsage_[i] = coreUsage;
+                PushHistory(performanceCoreHistory_[i], coreUsage);
+                previousCpuIdle_[i] = idle;
+                previousCpuTotal_[i] = totalTime;
+                total += coreUsage;
+            }
+
+            cpuSamplingReady_ = true;
+            totalCpuPercent_ = coreCount > 0 ? total / coreCount : 0.0;
+        }
+
+        MEMORYSTATUSEX mem{};
+        mem.dwLength = sizeof(mem);
+        if (GlobalMemoryStatusEx(&mem))
+        {
+            memoryTotalGb_ = static_cast<double>(mem.ullTotalPhys) / kBytesPerGiB;
+            memoryUsedGb_ = static_cast<double>(mem.ullTotalPhys - mem.ullAvailPhys) / kBytesPerGiB;
+
+            if (memoryTotalGb_ > 0.0)
+            {
+                memoryPercent_ = (memoryUsedGb_ * 100.0) / memoryTotalGb_;
+                memoryUsedGb_ = (std::clamp)(memoryUsedGb_, 0.0, memoryTotalGb_);
+            }
+            else
+            {
+                memoryTotalGb_ = 1.0;
+                memoryUsedGb_ = 0.0;
+                memoryPercent_ = static_cast<double>(mem.dwMemoryLoad);
+            }
+
+            memoryPercent_ = (std::clamp)(memoryPercent_, 0.0, 100.0);
+        }
+
+        ULONG ifTableSize = 0;
+        if (GetIfTable(nullptr, &ifTableSize, FALSE) == ERROR_INSUFFICIENT_BUFFER && ifTableSize > 0)
+        {
+            std::vector<std::uint8_t> ifBuffer(ifTableSize);
+            auto *ifTable = reinterpret_cast<MIB_IFTABLE *>(ifBuffer.data());
+            if (GetIfTable(ifTable, &ifTableSize, FALSE) == NO_ERROR)
+            {
+                std::uint64_t totalIn = 0;
+                std::uint64_t totalOut = 0;
+
+                for (DWORD i = 0; i < ifTable->dwNumEntries; ++i)
+                {
+                    const auto &row = ifTable->table[i];
+                    if (row.dwType == IF_TYPE_SOFTWARE_LOOPBACK || row.dwOperStatus != IF_OPER_STATUS_OPERATIONAL)
+                    {
+                        continue;
+                    }
+
+                    totalIn += row.dwInOctets;
+                    totalOut += row.dwOutOctets;
+                }
+
+                const std::uint64_t nowMs = GetTickCount64();
+                if (networkSamplingReady_ && nowMs > previousNetworkTickMs_)
+                {
+                    const double elapsedSec = static_cast<double>(nowMs - previousNetworkTickMs_) / 1000.0;
+                    if (elapsedSec > 0.0001)
+                    {
+                        const std::uint64_t inDelta = totalIn >= previousNetworkIn_ ? totalIn - previousNetworkIn_ : 0;
+                        const std::uint64_t outDelta = totalOut >= previousNetworkOut_ ? totalOut - previousNetworkOut_ : 0;
+
+                        downloadMbps_ = (static_cast<double>(inDelta) * 8.0) / (elapsedSec * 1000.0 * 1000.0);
+                        uploadMbps_ = (static_cast<double>(outDelta) * 8.0) / (elapsedSec * 1000.0 * 1000.0);
+                    }
+                }
+
+                previousNetworkIn_ = totalIn;
+                previousNetworkOut_ = totalOut;
+                previousNetworkTickMs_ = nowMs;
+                networkSamplingReady_ = true;
+            }
+        }
+
+        gpuPercent_ = QueryGpuUsagePercent();
+
+        PushHistory(cpuHistory_, totalCpuPercent_);
+        PushHistory(memoryHistory_, memoryUsedGb_);
+        PushHistory(gpuHistory_, gpuPercent_);
+        PushHistory(uploadHistory_, uploadMbps_);
+        PushHistory(downloadHistory_, downloadMbps_);
+    }
+
+    void MainWindow::RefreshPerformancePanel()
+    {
+        if (!perfCoreGrid_)
+        {
+            return;
+        }
+
+        auto updateDynamicScale = [](double &scale, const std::deque<double> &history)
+        {
+            double peak = 0.0;
+            for (double value : history)
+            {
+                if (value > peak)
+                {
+                    peak = value;
+                }
+            }
+
+            const double floor = 0.5;
+            double target = peak > 0.0 ? peak * 1.25 : floor;
+            target = (std::max)(floor, target);
+
+            if (scale <= 0.0)
+            {
+                scale = target;
+                return;
+            }
+
+            if (target > scale)
+            {
+                scale = target;
+            }
+            else
+            {
+                scale = scale * 0.88 + target * 0.12;
+            }
+
+            scale = (std::max)(floor, scale);
+        };
+
+        updateDynamicScale(uploadScaleMbps_, uploadHistory_);
+        updateDynamicScale(downloadScaleMbps_, downloadHistory_);
+
+        std::wstringstream caption;
+        caption << L"Live performance | CPU " << static_cast<int>(totalCpuPercent_ + 0.5)
+                << L"% | Memory " << FormatNumber(memoryUsedGb_, memoryTotalGb_ < 10.0 ? 1 : 0)
+                << L" / " << FormatNumber(memoryTotalGb_, memoryTotalGb_ < 10.0 ? 1 : 0)
+                << L" GB (" << static_cast<int>(memoryPercent_ + 0.5)
+                << L"%) | GPU " << static_cast<int>(gpuPercent_ + 0.5)
+                << L"% | Up " << FormatNumber(uploadMbps_, uploadMbps_ < 10.0 ? 1 : 0)
+                << L" Mbps | Down " << FormatNumber(downloadMbps_, downloadMbps_ < 10.0 ? 1 : 0) << L" Mbps";
+        SetWindowTextW(performancePlaceholder_, caption.str().c_str());
+
+        if (perfGraphCpu_)
+            InvalidateRect(perfGraphCpu_, nullptr, FALSE);
+        if (perfGraphMemory_)
+            InvalidateRect(perfGraphMemory_, nullptr, FALSE);
+        if (perfGraphGpu_)
+            InvalidateRect(perfGraphGpu_, nullptr, FALSE);
+        if (perfGraphUpload_)
+            InvalidateRect(perfGraphUpload_, nullptr, FALSE);
+        if (perfGraphDownload_)
+            InvalidateRect(perfGraphDownload_, nullptr, FALSE);
+        if (perfCoreGrid_)
+            InvalidateRect(perfCoreGrid_, nullptr, FALSE);
+    }
+
+    void MainWindow::DrawPerformanceGraph(const DRAWITEMSTRUCT *draw) const
+    {
+        if (!draw)
+        {
+            return;
+        }
+
+        struct GraphConfig
+        {
+            const std::deque<double> *history = nullptr;
+            const wchar_t *title = L"";
+            const wchar_t *unit = L"";
+            COLORREF lineColor = RGB(37, 99, 235);
+            double latest = 0.0;
+            double maxValue = 100.0;
+            bool showPercent = false;
+            bool showCoreOverlay = false;
+        };
+
+        GraphConfig cfg{};
+        switch (draw->CtlID)
+        {
+        case kIdPerfGraphCpu:
+            cfg.history = &cpuHistory_;
+            cfg.title = L"CPU Total";
+            cfg.unit = L"%";
+            cfg.lineColor = RGB(30, 120, 230);
+            cfg.latest = totalCpuPercent_;
+            cfg.maxValue = 100.0;
+            cfg.showPercent = true;
+            break;
+        case kIdPerfGraphMemory:
+            cfg.history = &memoryHistory_;
+            cfg.title = L"Memory";
+            cfg.unit = L"GB";
+            cfg.lineColor = RGB(16, 166, 115);
+            cfg.latest = memoryUsedGb_;
+            cfg.maxValue = (std::max)(1.0, memoryTotalGb_);
+            break;
+        case kIdPerfGraphGpu:
+            cfg.history = &gpuHistory_;
+            cfg.title = L"GPU";
+            cfg.unit = L"%";
+            cfg.lineColor = RGB(148, 73, 224);
+            cfg.latest = gpuPercent_;
+            cfg.maxValue = 100.0;
+            cfg.showPercent = true;
+            break;
+        case kIdPerfGraphUpload:
+            cfg.history = &uploadHistory_;
+            cfg.title = L"Network Upload";
+            cfg.unit = L"Mbps";
+            cfg.lineColor = RGB(236, 150, 14);
+            cfg.latest = uploadMbps_;
+            cfg.maxValue = (std::max)(0.5, uploadScaleMbps_);
+            break;
+        case kIdPerfGraphDownload:
+            cfg.history = &downloadHistory_;
+            cfg.title = L"Network Download";
+            cfg.unit = L"Mbps";
+            cfg.lineColor = RGB(225, 76, 88);
+            cfg.latest = downloadMbps_;
+            cfg.maxValue = (std::max)(0.5, downloadScaleMbps_);
+            break;
+        default:
+            return;
+        }
+
+        if (!cfg.history)
+        {
+            return;
+        }
+
+        HDC targetDc = draw->hDC;
+        RECT rc = draw->rcItem;
+        const int width = rc.right - rc.left;
+        const int height = rc.bottom - rc.top;
+        if (width <= 2 || height <= 2)
+        {
+            return;
+        }
+
+        HDC dc = CreateCompatibleDC(targetDc);
+        HBITMAP bitmap = CreateCompatibleBitmap(targetDc, width, height);
+        HBITMAP oldBitmap = reinterpret_cast<HBITMAP>(SelectObject(dc, bitmap));
+
+        RECT local{0, 0, width, height};
+        FillRect(dc, &local, cardBrush_);
+
+        HPEN borderPen = CreatePen(PS_SOLID, 1, RGB(204, 214, 229));
+        HPEN oldPen = reinterpret_cast<HPEN>(SelectObject(dc, borderPen));
+        HBRUSH oldBrush = reinterpret_cast<HBRUSH>(SelectObject(dc, GetStockObject(NULL_BRUSH)));
+        Rectangle(dc, local.left, local.top, local.right, local.bottom);
+        SelectObject(dc, oldBrush);
+        SelectObject(dc, oldPen);
+        DeleteObject(borderPen);
+
+        SetBkMode(dc, TRANSPARENT);
+        SetTextColor(dc, RGB(30, 46, 70));
+
+        RECT titleRect = local;
+        titleRect.left += 10;
+        titleRect.top += 5;
+        DrawTextW(dc, cfg.title, -1, &titleRect, DT_LEFT | DT_TOP | DT_SINGLELINE);
+
+        std::wstring latestLabel;
+        if (draw->CtlID == kIdPerfGraphMemory)
+        {
+            latestLabel = FormatAxisValue(cfg.latest, cfg.unit);
+            latestLabel += L" (";
+            latestLabel += std::to_wstring(static_cast<int>(memoryPercent_ + 0.5));
+            latestLabel += L"%)";
+        }
+        else if (cfg.showPercent)
+        {
+            latestLabel = std::to_wstring(static_cast<int>(cfg.latest + 0.5));
+            latestLabel += L"%";
+        }
+        else
+        {
+            latestLabel = FormatAxisValue(cfg.latest, cfg.unit);
+        }
+
+        RECT valueRect = local;
+        valueRect.right -= 10;
+        valueRect.top += 5;
+        DrawTextW(dc, latestLabel.c_str(), -1, &valueRect, DT_RIGHT | DT_TOP | DT_SINGLELINE);
+
+        RECT plot = local;
+        plot.left += 46;
+        plot.right -= 10;
+        plot.top += 28;
+        plot.bottom -= 20;
+
+        const int plotWidth = (std::max)(1, static_cast<int>(plot.right - plot.left));
+        const int plotHeight = (std::max)(1, static_cast<int>(plot.bottom - plot.top));
+
+        HBRUSH plotBrush = CreateSolidBrush(BlendColor(RGB(255, 255, 255), cfg.lineColor, 0.9));
+        FillRect(dc, &plot, plotBrush);
+        DeleteObject(plotBrush);
+
+        HPEN gridPen = CreatePen(PS_SOLID, 1, RGB(221, 229, 240));
+        oldPen = reinterpret_cast<HPEN>(SelectObject(dc, gridPen));
+
+        for (int i = 0; i <= 4; ++i)
+        {
+            const int y = plot.top + ((plotHeight - 1) * i) / 4;
+            MoveToEx(dc, plot.left, y, nullptr);
+            LineTo(dc, plot.right, y);
+
+            const double tickValue = cfg.maxValue * static_cast<double>(4 - i) / 4.0;
+            std::wstring yLabel;
+            if (cfg.showPercent)
+            {
+                yLabel = std::to_wstring(static_cast<int>(tickValue + 0.5));
+                yLabel += L"%";
+            }
+            else
+            {
+                yLabel = FormatAxisValue(tickValue, cfg.unit);
+            }
+
+            RECT yRect{2, y - 9, plot.left - 6, y + 9};
+            SetTextColor(dc, RGB(94, 106, 128));
+            DrawTextW(dc, yLabel.c_str(), -1, &yRect, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+        }
+
+        for (int i = 1; i <= 5; ++i)
+        {
+            const int x = plot.left + ((plotWidth - 1) * i) / 6;
+            MoveToEx(dc, x, plot.top, nullptr);
+            LineTo(dc, x, plot.bottom);
+        }
+
+        SelectObject(dc, oldPen);
+        DeleteObject(gridPen);
+
+        auto drawSeries = [&](const std::deque<double> &series, COLORREF color, int thickness, bool fillArea)
+        {
+            if (series.size() < 2)
+            {
+                return;
+            }
+
+            const int n = static_cast<int>(series.size());
+            std::vector<POINT> points;
+            points.reserve(n);
+
+            for (int i = 0; i < n; ++i)
+            {
+                const double clamped = (std::clamp)(series[i], 0.0, cfg.maxValue);
+                const int x = plot.left + ((plotWidth - 1) * i) / (n - 1);
+                const int y = plot.bottom - static_cast<int>((clamped / cfg.maxValue) * (plotHeight - 1));
+                points.push_back(POINT{x, y});
+            }
+
+            if (fillArea)
+            {
+                std::vector<POINT> area;
+                area.reserve(points.size() + 2);
+                area.push_back(POINT{points.front().x, plot.bottom});
+                area.insert(area.end(), points.begin(), points.end());
+                area.push_back(POINT{points.back().x, plot.bottom});
+
+                HBRUSH areaBrush = CreateSolidBrush(BlendColor(color, RGB(255, 255, 255), 0.75));
+                HBRUSH prevBrush = reinterpret_cast<HBRUSH>(SelectObject(dc, areaBrush));
+                HPEN nullPen = reinterpret_cast<HPEN>(SelectObject(dc, GetStockObject(NULL_PEN)));
+                Polygon(dc, area.data(), static_cast<int>(area.size()));
+                SelectObject(dc, nullPen);
+                SelectObject(dc, prevBrush);
+                DeleteObject(areaBrush);
+            }
+
+            HPEN linePen = CreatePen(PS_SOLID, thickness, color);
+            HPEN prevPen = reinterpret_cast<HPEN>(SelectObject(dc, linePen));
+            MoveToEx(dc, points.front().x, points.front().y, nullptr);
+            for (size_t i = 1; i < points.size(); ++i)
+            {
+                LineTo(dc, points[i].x, points[i].y);
+            }
+            SelectObject(dc, prevPen);
+            DeleteObject(linePen);
+        };
+
+        if (cfg.showCoreOverlay && !performanceCoreHistory_.empty())
+        {
+            constexpr COLORREF corePalette[] = {
+                RGB(99, 171, 255), RGB(92, 214, 189), RGB(119, 138, 252), RGB(239, 167, 96),
+                RGB(131, 227, 117), RGB(231, 113, 135), RGB(85, 196, 223), RGB(188, 160, 255)};
+
+            const size_t maxSeries = 24;
+            const size_t coreCount = performanceCoreHistory_.size();
+            const size_t step = coreCount > maxSeries ? (coreCount + maxSeries - 1) / maxSeries : 1;
+
+            for (size_t core = 0; core < coreCount; core += step)
+            {
+                const COLORREF base = corePalette[(core / step) % (sizeof(corePalette) / sizeof(corePalette[0]))];
+                const COLORREF line = BlendColor(base, RGB(255, 255, 255), 0.30);
+                drawSeries(performanceCoreHistory_[core], line, 1, false);
+            }
+        }
+
+        drawSeries(*cfg.history, cfg.lineColor, 2, true);
+
+        if (!cfg.history->empty())
+        {
+            const int n = static_cast<int>(cfg.history->size());
+            const double tail = (std::clamp)(cfg.history->back(), 0.0, cfg.maxValue);
+            const int tailX = plot.left + ((plotWidth - 1) * (n - 1)) / (n > 1 ? (n - 1) : 1);
+            const int tailY = plot.bottom - static_cast<int>((tail / cfg.maxValue) * (plotHeight - 1));
+
+            HBRUSH markerBrush = CreateSolidBrush(cfg.lineColor);
+            HBRUSH prevBrush = reinterpret_cast<HBRUSH>(SelectObject(dc, markerBrush));
+            HPEN markerPen = CreatePen(PS_SOLID, 1, BlendColor(cfg.lineColor, RGB(0, 0, 0), 0.2));
+            HPEN prevPen = reinterpret_cast<HPEN>(SelectObject(dc, markerPen));
+            Ellipse(dc, tailX - 3, tailY - 3, tailX + 4, tailY + 4);
+            SelectObject(dc, prevPen);
+            SelectObject(dc, prevBrush);
+            DeleteObject(markerPen);
+            DeleteObject(markerBrush);
+        }
+
+        RECT xLabelRect = plot;
+        xLabelRect.top = plot.bottom + 2;
+        xLabelRect.bottom = local.bottom - 2;
+        SetTextColor(dc, RGB(108, 120, 142));
+        DrawTextW(dc, L"60s history", -1, &xLabelRect, DT_LEFT | DT_TOP | DT_SINGLELINE);
+        DrawTextW(dc, L"now", -1, &xLabelRect, DT_RIGHT | DT_TOP | DT_SINGLELINE);
+
+        BitBlt(targetDc, rc.left, rc.top, width, height, dc, 0, 0, SRCCOPY);
+
+        SelectObject(dc, oldBitmap);
+        DeleteObject(bitmap);
+        DeleteDC(dc);
+    }
+
+    void MainWindow::DrawCoreGrid(const DRAWITEMSTRUCT *draw) const
+    {
+        if (!draw)
+        {
+            return;
+        }
+
+        HDC targetDc = draw->hDC;
+        RECT rc = draw->rcItem;
+        const int width = rc.right - rc.left;
+        const int height = rc.bottom - rc.top;
+        if (width <= 2 || height <= 2)
+        {
+            return;
+        }
+
+        HDC dc = CreateCompatibleDC(targetDc);
+        HBITMAP bitmap = CreateCompatibleBitmap(targetDc, width, height);
+        HBITMAP oldBitmap = reinterpret_cast<HBITMAP>(SelectObject(dc, bitmap));
+
+        RECT local{0, 0, width, height};
+        FillRect(dc, &local, cardBrush_);
+
+        HPEN borderPen = CreatePen(PS_SOLID, 1, RGB(204, 214, 229));
+        HPEN oldPen = reinterpret_cast<HPEN>(SelectObject(dc, borderPen));
+        HBRUSH oldBrush = reinterpret_cast<HBRUSH>(SelectObject(dc, GetStockObject(NULL_BRUSH)));
+        Rectangle(dc, local.left, local.top, local.right, local.bottom);
+        SelectObject(dc, oldBrush);
+        SelectObject(dc, oldPen);
+        DeleteObject(borderPen);
+
+        SetBkMode(dc, TRANSPARENT);
+        SetTextColor(dc, RGB(30, 46, 70));
+
+        RECT titleRect = local;
+        titleRect.left += 10;
+        titleRect.top += 5;
+        DrawTextW(dc, L"Per-Core CPU Graphs", -1, &titleRect, DT_LEFT | DT_TOP | DT_SINGLELINE);
+
+        const size_t coreCount = performanceCoreHistory_.size();
+        if (coreCount == 0)
+        {
+            RECT waitRect = local;
+            waitRect.left += 10;
+            waitRect.top += 26;
+            SetTextColor(dc, RGB(104, 118, 141));
+            DrawTextW(dc, L"Collecting core samples...", -1, &waitRect, DT_LEFT | DT_TOP | DT_SINGLELINE);
+
+            BitBlt(targetDc, rc.left, rc.top, width, height, dc, 0, 0, SRCCOPY);
+            SelectObject(dc, oldBitmap);
+            DeleteObject(bitmap);
+            DeleteDC(dc);
+            return;
+        }
+
+        RECT grid = local;
+        grid.left += 8;
+        grid.right -= 8;
+        grid.top += 26;
+        grid.bottom -= 8;
+
+        const int gap = 6;
+        const int gridWidth = (std::max)(1, static_cast<int>(grid.right - grid.left));
+        const int gridHeight = (std::max)(1, static_cast<int>(grid.bottom - grid.top));
+
+        int columns = (std::max)(1, gridWidth / 150);
+        columns = (std::min)(columns, static_cast<int>(coreCount));
+        int rows = static_cast<int>((coreCount + static_cast<size_t>(columns) - 1) / static_cast<size_t>(columns));
+
+        while (rows > 1)
+        {
+            const int nextColumns = columns + 1;
+            if (nextColumns > static_cast<int>(coreCount))
+            {
+                break;
+            }
+
+            const int candidateTileWidth = (gridWidth - gap * (nextColumns - 1)) / nextColumns;
+            if (candidateTileWidth < 96)
+            {
+                break;
+            }
+
+            const int candidateRows = static_cast<int>((coreCount + static_cast<size_t>(nextColumns) - 1) / static_cast<size_t>(nextColumns));
+            const int candidateTileHeight = (gridHeight - gap * (candidateRows - 1)) / candidateRows;
+            if (candidateTileHeight < 50)
+            {
+                break;
+            }
+
+            columns = nextColumns;
+            rows = candidateRows;
+        }
+
+        const int tileWidth = (std::max)(96, (gridWidth - gap * (columns - 1)) / columns);
+        const int tileHeight = (std::max)(50, (gridHeight - gap * (rows - 1)) / rows);
+
+        constexpr COLORREF kCorePalette[] = {
+            RGB(68, 128, 245), RGB(25, 173, 123), RGB(130, 102, 246), RGB(229, 140, 28),
+            RGB(210, 84, 109), RGB(23, 163, 203), RGB(163, 119, 230), RGB(94, 138, 40)};
+
+        for (size_t idx = 0; idx < coreCount; ++idx)
+        {
+            const int row = static_cast<int>(idx / static_cast<size_t>(columns));
+            const int col = static_cast<int>(idx % static_cast<size_t>(columns));
+
+            RECT tile{
+                grid.left + col * (tileWidth + gap),
+                grid.top + row * (tileHeight + gap),
+                grid.left + col * (tileWidth + gap) + tileWidth,
+                grid.top + row * (tileHeight + gap) + tileHeight};
+
+            if (tile.top >= grid.bottom)
+            {
+                break;
+            }
+            if (tile.right > grid.right)
+            {
+                tile.right = grid.right;
+            }
+            if (tile.bottom > grid.bottom)
+            {
+                tile.bottom = grid.bottom;
+            }
+
+            HBRUSH tileBrush = CreateSolidBrush(RGB(247, 250, 255));
+            FillRect(dc, &tile, tileBrush);
+            DeleteObject(tileBrush);
+
+            HPEN tileBorder = CreatePen(PS_SOLID, 1, RGB(216, 225, 239));
+            oldPen = reinterpret_cast<HPEN>(SelectObject(dc, tileBorder));
+            oldBrush = reinterpret_cast<HBRUSH>(SelectObject(dc, GetStockObject(NULL_BRUSH)));
+            Rectangle(dc, tile.left, tile.top, tile.right, tile.bottom);
+            SelectObject(dc, oldBrush);
+            SelectObject(dc, oldPen);
+            DeleteObject(tileBorder);
+
+            RECT nameRect = tile;
+            nameRect.left += 5;
+            nameRect.top += 3;
+            std::wstring coreLabel = L"Core ";
+            coreLabel += std::to_wstring(idx);
+            SetTextColor(dc, RGB(53, 68, 94));
+            DrawTextW(dc, coreLabel.c_str(), -1, &nameRect, DT_LEFT | DT_TOP | DT_SINGLELINE);
+
+            RECT usageRect = tile;
+            usageRect.right -= 5;
+            usageRect.top += 3;
+            double usageValue = 0.0;
+            if (idx < performanceCoreUsage_.size())
+            {
+                usageValue = performanceCoreUsage_[idx];
+            }
+            std::wstring usageText = std::to_wstring(static_cast<int>(usageValue + 0.5));
+            usageText += L"%";
+            DrawTextW(dc, usageText.c_str(), -1, &usageRect, DT_RIGHT | DT_TOP | DT_SINGLELINE);
+
+            RECT chart = tile;
+            chart.left += 4;
+            chart.right -= 4;
+            chart.top += 18;
+            chart.bottom -= 4;
+
+            const int chartWidth = (std::max)(1, static_cast<int>(chart.right - chart.left));
+            const int chartHeight = (std::max)(1, static_cast<int>(chart.bottom - chart.top));
+
+            HPEN gridPen = CreatePen(PS_SOLID, 1, RGB(228, 234, 245));
+            oldPen = reinterpret_cast<HPEN>(SelectObject(dc, gridPen));
+            for (int line = 1; line <= 2; ++line)
+            {
+                const int y = chart.top + (chartHeight * line) / 3;
+                MoveToEx(dc, chart.left, y, nullptr);
+                LineTo(dc, chart.right, y);
+            }
+            SelectObject(dc, oldPen);
+            DeleteObject(gridPen);
+
+            const auto &series = performanceCoreHistory_[idx];
+            if (series.size() >= 2)
+            {
+                const COLORREF baseColor = kCorePalette[idx % (sizeof(kCorePalette) / sizeof(kCorePalette[0]))];
+
+                std::vector<POINT> points;
+                const int n = static_cast<int>(series.size());
+                points.reserve(n);
+                for (int i = 0; i < n; ++i)
+                {
+                    const double sample = (std::clamp)(series[i], 0.0, 100.0);
+                    const int x = chart.left + ((chartWidth - 1) * i) / (n - 1);
+                    const int y = chart.bottom - static_cast<int>((sample / 100.0) * (chartHeight - 1));
+                    points.push_back(POINT{x, y});
+                }
+
+                std::vector<POINT> area;
+                area.reserve(points.size() + 2);
+                area.push_back(POINT{points.front().x, chart.bottom});
+                area.insert(area.end(), points.begin(), points.end());
+                area.push_back(POINT{points.back().x, chart.bottom});
+
+                HBRUSH areaBrush = CreateSolidBrush(BlendColor(baseColor, RGB(255, 255, 255), 0.82));
+                HBRUSH prevAreaBrush = reinterpret_cast<HBRUSH>(SelectObject(dc, areaBrush));
+                HPEN nullPen = reinterpret_cast<HPEN>(SelectObject(dc, GetStockObject(NULL_PEN)));
+                Polygon(dc, area.data(), static_cast<int>(area.size()));
+                SelectObject(dc, nullPen);
+                SelectObject(dc, prevAreaBrush);
+                DeleteObject(areaBrush);
+
+                HPEN linePen = CreatePen(PS_SOLID, 1, baseColor);
+                HPEN prevPen = reinterpret_cast<HPEN>(SelectObject(dc, linePen));
+                MoveToEx(dc, points.front().x, points.front().y, nullptr);
+                for (size_t p = 1; p < points.size(); ++p)
+                {
+                    LineTo(dc, points[p].x, points[p].y);
+                }
+                SelectObject(dc, prevPen);
+                DeleteObject(linePen);
+            }
+        }
+
+        BitBlt(targetDc, rc.left, rc.top, width, height, dc, 0, 0, SRCCOPY);
+
+        SelectObject(dc, oldBitmap);
+        DeleteObject(bitmap);
+        DeleteDC(dc);
+    }
+
     void MainWindow::HandleSnapshotUpdate()
     {
         snapshot_ = engine_.GetSnapshot();
         ApplyFilterAndSort();
+        UpdatePerformanceMetrics();
+        RefreshPerformancePanel();
 
         if (activeSection_ == Section::Processes)
         {
