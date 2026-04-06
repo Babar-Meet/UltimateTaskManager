@@ -53,7 +53,6 @@ namespace
     constexpr int kIdPerfPlaceholder = 1025;
     constexpr int kIdNetworkPlaceholder = 1026;
     constexpr int kIdHardwarePlaceholder = 1027;
-    constexpr int kIdStartupAppsPlaceholder = 1029;
     constexpr int kIdUsersPlaceholder = 1030;
     constexpr int kIdQuickToolsTitle = 1031;
     constexpr int kIdQuickToolsHint = 1032;
@@ -106,6 +105,18 @@ namespace
     constexpr int kIdServicesRestartButton = 1080;
     constexpr int kIdServicesOpenConsoleButton = 1081;
     constexpr int kIdServicesStatus = 1082;
+    constexpr int kIdStartupTitle = 1200;
+    constexpr int kIdStartupHint = 1201;
+    constexpr int kIdStartupSearchLabel = 1202;
+    constexpr int kIdStartupSearchEdit = 1203;
+    constexpr int kIdStartupModeLabel = 1204;
+    constexpr int kIdStartupModeCombo = 1205;
+    constexpr int kIdStartupList = 1206;
+    constexpr int kIdStartupRefreshButton = 1207;
+    constexpr int kIdStartupEnableButton = 1208;
+    constexpr int kIdStartupDisableButton = 1209;
+    constexpr int kIdStartupOpenLocationButton = 1210;
+    constexpr int kIdStartupStatus = 1211;
 
     constexpr int kIdQuickToolPortKillAll = 41000;
     constexpr int kIdQuickToolProcessKillAll = 41001;
@@ -733,6 +744,7 @@ namespace utm::ui
         networkPanelComponent_.Attach(this);
         hardwarePanelComponent_.Attach(this);
         servicesPanelComponent_.Attach(this);
+        startupAppsPanelComponent_.Attach(this);
         quickToolsPanelComponent_.Attach(this);
         statusBarComponent_.Attach(this);
     }
@@ -943,6 +955,11 @@ namespace utm::ui
                 return notifyResult;
             }
 
+            if (startupAppsPanelComponent_.HandleNotify(hdr, lParam, notifyResult))
+            {
+                return notifyResult;
+            }
+
             break;
         }
 
@@ -958,6 +975,7 @@ namespace utm::ui
                 networkPanelComponent_.HandleCommand(id, code) ||
                 hardwarePanelComponent_.HandleCommand(id, code) ||
                 servicesPanelComponent_.HandleCommand(id, code) ||
+                startupAppsPanelComponent_.HandleCommand(id, code) ||
                 quickToolsPanelComponent_.HandleCommand(id))
             {
                 return 0;
@@ -992,7 +1010,7 @@ namespace utm::ui
                 return reinterpret_cast<LRESULT>(backgroundBrush_);
             }
 
-            if (control == networkTitle_ || control == hardwarePlaceholder_ || control == servicesTitle_)
+            if (control == networkTitle_ || control == hardwarePlaceholder_ || control == servicesTitle_ || control == startupAppsTitle_)
             {
                 SetBkColor(dc, kMainBackgroundColor);
                 SetTextColor(dc, RGB(40, 57, 82));
@@ -1026,7 +1044,10 @@ namespace utm::ui
                 control == servicesSearchLabel_ ||
                 control == servicesModeLabel_ ||
                 control == servicesStatus_ ||
-                control == startupAppsPlaceholder_ ||
+                control == startupAppsHint_ ||
+                control == startupAppsSearchLabel_ ||
+                control == startupAppsModeLabel_ ||
+                control == startupAppsStatus_ ||
                 control == usersPlaceholder_)
             {
                 SetBkColor(dc, kMainBackgroundColor);
@@ -2248,19 +2269,213 @@ namespace utm::ui
             }
         }
 
-        startupAppsPlaceholder_ = CreateWindowExW(
+        startupAppsTitle_ = CreateWindowExW(
             0,
             L"STATIC",
-            L"Startup Apps view is wired into navigation.\r\n\r\nNext phase: per-app startup impact and enable/disable actions.",
+            L"Startup Applications",
             WS_CHILD,
             0,
             0,
             0,
             0,
             hwnd_,
-            MenuId(kIdStartupAppsPlaceholder),
+            MenuId(kIdStartupTitle),
             instance_,
             nullptr);
+
+        startupAppsHint_ = CreateWindowExW(
+            0,
+            L"STATIC",
+            L"Manage startup entries from Run keys and Startup folders. Use enable/disable to control logon behavior.",
+            WS_CHILD,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdStartupHint),
+            instance_,
+            nullptr);
+
+        startupAppsSearchLabel_ = CreateWindowExW(
+            0,
+            L"STATIC",
+            L"Search",
+            WS_CHILD,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdStartupSearchLabel),
+            instance_,
+            nullptr);
+
+        startupAppsSearchEdit_ = CreateWindowExW(
+            WS_EX_CLIENTEDGE,
+            L"EDIT",
+            nullptr,
+            WS_CHILD | ES_AUTOHSCROLL,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdStartupSearchEdit),
+            instance_,
+            nullptr);
+
+        startupAppsModeLabel_ = CreateWindowExW(
+            0,
+            L"STATIC",
+            L"Mode",
+            WS_CHILD,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdStartupModeLabel),
+            instance_,
+            nullptr);
+
+        startupAppsModeCombo_ = CreateWindowExW(
+            0,
+            L"COMBOBOX",
+            nullptr,
+            WS_CHILD | WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdStartupModeCombo),
+            instance_,
+            nullptr);
+
+        startupAppsRefreshButton_ = CreateWindowExW(
+            0,
+            L"BUTTON",
+            L"Refresh",
+            WS_CHILD | BS_PUSHBUTTON,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdStartupRefreshButton),
+            instance_,
+            nullptr);
+
+        startupAppsEnableButton_ = CreateWindowExW(
+            0,
+            L"BUTTON",
+            L"Enable",
+            WS_CHILD | BS_PUSHBUTTON,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdStartupEnableButton),
+            instance_,
+            nullptr);
+
+        startupAppsDisableButton_ = CreateWindowExW(
+            0,
+            L"BUTTON",
+            L"Disable",
+            WS_CHILD | BS_PUSHBUTTON,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdStartupDisableButton),
+            instance_,
+            nullptr);
+
+        startupAppsOpenLocationButton_ = CreateWindowExW(
+            0,
+            L"BUTTON",
+            L"Open Location",
+            WS_CHILD | BS_PUSHBUTTON,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdStartupOpenLocationButton),
+            instance_,
+            nullptr);
+
+        startupAppsList_ = CreateWindowExW(
+            WS_EX_CLIENTEDGE,
+            WC_LISTVIEWW,
+            nullptr,
+            WS_CHILD | LVS_REPORT | LVS_SHOWSELALWAYS | LVS_SINGLESEL,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdStartupList),
+            instance_,
+            nullptr);
+
+        startupAppsStatus_ = CreateWindowExW(
+            0,
+            L"STATIC",
+            L"Scanning startup entries...",
+            WS_CHILD,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdStartupStatus),
+            instance_,
+            nullptr);
+
+        if (startupAppsModeCombo_)
+        {
+            SendMessageW(startupAppsModeCombo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"All Entries"));
+            SendMessageW(startupAppsModeCombo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Enabled"));
+            SendMessageW(startupAppsModeCombo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Disabled"));
+            SendMessageW(startupAppsModeCombo_, CB_SETCURSEL, 0, 0);
+        }
+
+        if (startupAppsList_)
+        {
+            SetWindowTheme(startupAppsList_, L"Explorer", nullptr);
+            ListView_SetExtendedListViewStyle(
+                startupAppsList_,
+                LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_GRIDLINES | LVS_EX_LABELTIP);
+
+            struct StartupColumn
+            {
+                const wchar_t *title;
+                int width;
+            };
+
+            const StartupColumn columns[] = {
+                {L"Name", 220},
+                {L"Status", 110},
+                {L"Startup Type", 150},
+                {L"Scope", 120},
+                {L"Command", 360},
+                {L"Source", 300}};
+
+            for (int i = 0; i < static_cast<int>(std::size(columns)); ++i)
+            {
+                LVCOLUMNW column{};
+                column.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
+                column.pszText = const_cast<LPWSTR>(columns[i].title);
+                column.cx = columns[i].width;
+                column.iSubItem = i;
+                ListView_InsertColumn(startupAppsList_, i, &column);
+            }
+        }
 
         usersPlaceholder_ = CreateWindowExW(
             0,
@@ -2509,7 +2724,9 @@ namespace utm::ui
             !hardwarePlaceholder_ || !hardwareHint_ || !hardwareSearchLabel_ || !hardwareSearchEdit_ || !hardwareList_ || !hardwareRefreshButton_ || !hardwareToggleButton_ || !hardwareStatus_ ||
             !servicesTitle_ || !servicesHint_ || !servicesSearchLabel_ || !servicesSearchEdit_ || !servicesModeLabel_ || !servicesModeCombo_ ||
             !servicesRefreshButton_ || !servicesStartButton_ || !servicesStopButton_ || !servicesRestartButton_ || !servicesOpenConsoleButton_ || !servicesList_ || !servicesStatus_ ||
-            !startupAppsPlaceholder_ || !usersPlaceholder_ ||
+            !startupAppsTitle_ || !startupAppsHint_ || !startupAppsSearchLabel_ || !startupAppsSearchEdit_ || !startupAppsModeLabel_ || !startupAppsModeCombo_ ||
+            !startupAppsRefreshButton_ || !startupAppsEnableButton_ || !startupAppsDisableButton_ || !startupAppsOpenLocationButton_ || !startupAppsList_ || !startupAppsStatus_ ||
+            !usersPlaceholder_ ||
             !quickToolsTitle_ || !quickToolsHint_ ||
             !quickPortLabel_ || !quickPortEdit_ || !quickKillPortButton_ || !quickPortKillOneButton_ ||
             !quickProcessLabel_ || !quickProcessEdit_ || !quickKillPatternButton_ || !quickProcessKillOneButton_ ||
@@ -2581,7 +2798,18 @@ namespace utm::ui
         applyFont(servicesOpenConsoleButton_, uiBoldFont_);
         applyFont(servicesList_, uiFont_);
         applyFont(servicesStatus_, uiFont_);
-        applyFont(startupAppsPlaceholder_, uiFont_);
+        applyFont(startupAppsTitle_, uiBoldFont_);
+        applyFont(startupAppsHint_, uiFont_);
+        applyFont(startupAppsSearchLabel_, uiBoldFont_);
+        applyFont(startupAppsSearchEdit_, uiFont_);
+        applyFont(startupAppsModeLabel_, uiBoldFont_);
+        applyFont(startupAppsModeCombo_, uiFont_);
+        applyFont(startupAppsRefreshButton_, uiBoldFont_);
+        applyFont(startupAppsEnableButton_, uiBoldFont_);
+        applyFont(startupAppsDisableButton_, uiBoldFont_);
+        applyFont(startupAppsOpenLocationButton_, uiBoldFont_);
+        applyFont(startupAppsList_, uiFont_);
+        applyFont(startupAppsStatus_, uiFont_);
         applyFont(usersPlaceholder_, uiFont_);
         applyFont(quickToolsTitle_, uiTitleFont_);
         applyFont(quickToolsHint_, uiFont_);
@@ -2607,6 +2835,7 @@ namespace utm::ui
         RefreshNetworkInventory(false);
         RefreshHardwareInventory(false);
         RefreshServicesInventory(false);
+        RefreshStartupAppsInventory(false);
         ApplySectionVisibility();
         return true;
     }
@@ -2760,7 +2989,35 @@ namespace utm::ui
         MoveWindow(servicesList_, contentX, servicesListTop, contentWidth, servicesListHeight, TRUE);
         MoveWindow(servicesStatus_, contentX, servicesListTop + servicesListHeight + 4, contentWidth, servicesStatusHeight, TRUE);
 
-        MoveWindow(startupAppsPlaceholder_, contentX, bodyTop, contentWidth, bodyHeight, TRUE);
+        const int startupRefreshWidth = (std::max)(100, (std::min)(170, contentWidth / 5));
+        const int startupOpenWidth = (std::max)(150, (std::min)(220, contentWidth / 4));
+        const int startupHeaderWidth = (std::max)(140, contentWidth - startupRefreshWidth - startupOpenWidth - 8);
+        MoveWindow(startupAppsTitle_, contentX, bodyTop, startupHeaderWidth, 24, TRUE);
+        MoveWindow(startupAppsRefreshButton_, contentX + contentWidth - startupOpenWidth - startupRefreshWidth - 8, bodyTop, startupRefreshWidth, 30, TRUE);
+        MoveWindow(startupAppsOpenLocationButton_, contentX + contentWidth - startupOpenWidth, bodyTop, startupOpenWidth, 30, TRUE);
+        MoveWindow(startupAppsHint_, contentX, bodyTop + 24, contentWidth, 24, TRUE);
+
+        const int startupSearchTop = bodyTop + 50;
+        const int startupModeWidth = (std::max)(150, (std::min)(210, contentWidth / 3));
+        MoveWindow(startupAppsSearchLabel_, contentX, startupSearchTop + 3, 56, 22, TRUE);
+        MoveWindow(startupAppsModeLabel_, contentX + contentWidth - startupModeWidth - 48, startupSearchTop + 3, 42, 22, TRUE);
+        MoveWindow(startupAppsModeCombo_, contentX + contentWidth - startupModeWidth, startupSearchTop, startupModeWidth, 220, TRUE);
+
+        const int startupSearchLeft = contentX + 58;
+        const int startupSearchRight = contentX + contentWidth - startupModeWidth - 54;
+        MoveWindow(startupAppsSearchEdit_, startupSearchLeft, startupSearchTop, (std::max)(120, startupSearchRight - startupSearchLeft), 28, TRUE);
+
+        const int startupActionTop = startupSearchTop + 34;
+        const int startupActionWidth = (contentWidth - 8) / 2;
+        MoveWindow(startupAppsEnableButton_, contentX, startupActionTop, startupActionWidth, 30, TRUE);
+        MoveWindow(startupAppsDisableButton_, contentX + startupActionWidth + 8, startupActionTop, contentWidth - startupActionWidth - 8, 30, TRUE);
+
+        const int startupListTop = startupActionTop + 36;
+        const int startupStatusHeight = 24;
+        const int startupListHeight = (std::max)(80, bodyHeight - (startupListTop - bodyTop) - startupStatusHeight - 6);
+        MoveWindow(startupAppsList_, contentX, startupListTop, contentWidth, startupListHeight, TRUE);
+        MoveWindow(startupAppsStatus_, contentX, startupListTop + startupListHeight + 4, contentWidth, startupStatusHeight, TRUE);
+
         MoveWindow(usersPlaceholder_, contentX, bodyTop, contentWidth, bodyHeight, TRUE);
 
         const int perfGap = 8;
@@ -2986,7 +3243,18 @@ namespace utm::ui
         ShowWindow(servicesOpenConsoleButton_, servicesTab ? SW_SHOW : SW_HIDE);
         ShowWindow(servicesList_, servicesTab ? SW_SHOW : SW_HIDE);
         ShowWindow(servicesStatus_, servicesTab ? SW_SHOW : SW_HIDE);
-        ShowWindow(startupAppsPlaceholder_, startupTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(startupAppsTitle_, startupTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(startupAppsHint_, startupTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(startupAppsSearchLabel_, startupTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(startupAppsSearchEdit_, startupTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(startupAppsModeLabel_, startupTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(startupAppsModeCombo_, startupTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(startupAppsRefreshButton_, startupTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(startupAppsEnableButton_, startupTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(startupAppsDisableButton_, startupTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(startupAppsOpenLocationButton_, startupTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(startupAppsList_, startupTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(startupAppsStatus_, startupTab ? SW_SHOW : SW_HIDE);
         ShowWindow(usersPlaceholder_, usersTab ? SW_SHOW : SW_HIDE);
 
         ShowWindow(quickToolsTitle_, quickToolsTab ? SW_SHOW : SW_HIDE);
@@ -3018,6 +3286,11 @@ namespace utm::ui
         if (servicesTab)
         {
             RefreshServicesActionState();
+        }
+
+        if (startupTab)
+        {
+            RefreshStartupAppsActionState();
         }
     }
 
@@ -3053,6 +3326,10 @@ namespace utm::ui
         else if (activeSection_ == Section::Services)
         {
             RefreshServicesInventory(true);
+        }
+        else if (activeSection_ == Section::StartupApps)
+        {
+            RefreshStartupAppsInventory(true);
         }
     }
 

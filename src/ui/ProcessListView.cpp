@@ -176,6 +176,15 @@ namespace utm::ui
             }
         }
 
+        if (activeSection_ == Section::StartupApps)
+        {
+            const std::uint64_t nowMs = GetTickCount64();
+            if (nowMs >= lastStartupAppsRefreshTickMs_ + 8000)
+            {
+                RefreshStartupAppsInventory(true);
+            }
+        }
+
         if (activeSection_ == Section::Processes)
         {
             RefreshProcessView();

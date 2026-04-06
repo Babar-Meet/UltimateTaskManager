@@ -3,6 +3,7 @@
 #include "core/engine/MonitorEngine.h"
 #include "core/model/ProcessSnapshot.h"
 #include "system/services/ServiceManager.h"
+#include "system/startup/StartupAppsManager.h"
 #include "ui/HardwarePanel.h"
 #include "ui/NetworkPanel.h"
 #include "ui/PerformancePanel.h"
@@ -11,6 +12,7 @@
 #include "ui/ServicesPanel.h"
 #include "ui/SidebarNavigation.h"
 #include "ui/SidebarRetractable.h"
+#include "ui/StartupAppsPanel.h"
 #include "ui/StatusBar.h"
 
 #include <windows.h>
@@ -46,6 +48,7 @@ namespace utm::ui
         friend class NetworkPanel;
         friend class HardwarePanel;
         friend class ServicesPanel;
+        friend class StartupAppsPanel;
         friend class QuickToolsPanel;
         friend class StatusBar;
 
@@ -109,6 +112,13 @@ namespace utm::ui
             Stopped
         };
 
+        enum class StartupAppsFilterMode
+        {
+            All,
+            Enabled,
+            Disabled
+        };
+
         struct NetworkInterfacePerf;
         struct GpuPerf;
         struct PerformanceSubviewBinding;
@@ -150,6 +160,12 @@ namespace utm::ui
         void ApplyServicesFilterToList(bool preserveSelection);
         void RefreshServicesActionState();
         int SelectedServiceIndex() const;
+        bool HandleStartupAppsCommand(UINT id, UINT code);
+        bool HandleStartupAppsNotify(const NMHDR *hdr, LPARAM lParam, LRESULT &result);
+        void RefreshStartupAppsInventory(bool preserveSelection);
+        void ApplyStartupAppsFilterToList(bool preserveSelection);
+        void RefreshStartupAppsActionState();
+        int SelectedStartupAppIndex() const;
         const NetworkInterfacePerf *GetActiveNetworkInterface() const;
         const GpuPerf *GetActiveGpu() const;
         void NormalizeDynamicPerformanceSelection();
@@ -273,6 +289,7 @@ namespace utm::ui
         NetworkPanel networkPanelComponent_{};
         HardwarePanel hardwarePanelComponent_{};
         ServicesPanel servicesPanelComponent_{};
+        StartupAppsPanel startupAppsPanelComponent_{};
         QuickToolsPanel quickToolsPanelComponent_{};
         StatusBar statusBarComponent_{};
 
@@ -343,7 +360,18 @@ namespace utm::ui
         HWND servicesOpenConsoleButton_ = nullptr;
         HWND servicesList_ = nullptr;
         HWND servicesStatus_ = nullptr;
-        HWND startupAppsPlaceholder_ = nullptr;
+        HWND startupAppsTitle_ = nullptr;
+        HWND startupAppsHint_ = nullptr;
+        HWND startupAppsSearchLabel_ = nullptr;
+        HWND startupAppsSearchEdit_ = nullptr;
+        HWND startupAppsModeLabel_ = nullptr;
+        HWND startupAppsModeCombo_ = nullptr;
+        HWND startupAppsRefreshButton_ = nullptr;
+        HWND startupAppsEnableButton_ = nullptr;
+        HWND startupAppsDisableButton_ = nullptr;
+        HWND startupAppsOpenLocationButton_ = nullptr;
+        HWND startupAppsList_ = nullptr;
+        HWND startupAppsStatus_ = nullptr;
         HWND usersPlaceholder_ = nullptr;
         HWND quickToolsTitle_ = nullptr;
         HWND quickToolsHint_ = nullptr;
@@ -380,9 +408,11 @@ namespace utm::ui
         int lastVisibleCount_ = -1;
         std::wstring hardwareFilterText_;
         std::wstring servicesFilterText_;
+        std::wstring startupAppsFilterText_;
         std::vector<size_t> networkVisibleRows_;
         std::vector<size_t> hardwareVisibleRows_;
         std::vector<size_t> servicesVisibleRows_;
+        std::vector<size_t> startupAppsVisibleRows_;
 
         std::vector<double> performanceCoreUsage_;
         std::vector<std::deque<double>> performanceCoreHistory_;
@@ -397,6 +427,7 @@ namespace utm::ui
         std::vector<GpuPerf> gpuDevices_;
         std::vector<HardwareDeviceEntry> hardwareDevices_;
         std::vector<system::services::ServiceInfo> services_;
+        std::vector<system::startup::StartupAppEntry> startupApps_;
         std::vector<PerformanceSubviewBinding> perfDynamicNavBindings_;
         size_t perfStaticDynamicButtonCount_ = 0;
         std::wstring perfDynamicNavSignature_;
@@ -405,6 +436,7 @@ namespace utm::ui
         std::uint64_t lastNetworkRefreshTickMs_ = 0;
         std::uint64_t lastHardwareRefreshTickMs_ = 0;
         std::uint64_t lastServicesRefreshTickMs_ = 0;
+        std::uint64_t lastStartupAppsRefreshTickMs_ = 0;
 
         double totalCpuPercent_ = 0.0;
         double memoryPercent_ = 0.0;
@@ -494,6 +526,7 @@ namespace utm::ui
         CpuGraphMode cpuGraphMode_ = CpuGraphMode::Single;
         NetworkFilterMode activeNetworkFilterMode_ = NetworkFilterMode::All;
         ServiceFilterMode activeServiceFilterMode_ = ServiceFilterMode::All;
+        StartupAppsFilterMode activeStartupAppsFilterMode_ = StartupAppsFilterMode::All;
         int perfAllScrollOffset_ = 0;
         int perfAllContentHeight_ = 0;
         int perfCpuCoreScrollOffset_ = 0;
