@@ -3,6 +3,7 @@
 #include "core/engine/MonitorEngine.h"
 #include "core/model/ProcessSnapshot.h"
 #include "ui/HardwarePanel.h"
+#include "ui/NetworkPanel.h"
 #include "ui/PerformancePanel.h"
 #include "ui/ProcessListView.h"
 #include "ui/QuickToolsPanel.h"
@@ -38,6 +39,7 @@ namespace utm::ui
         friend class SidebarNavigation;
         friend class ProcessListView;
         friend class PerformancePanel;
+        friend class NetworkPanel;
         friend class HardwarePanel;
         friend class QuickToolsPanel;
         friend class StatusBar;
@@ -86,6 +88,15 @@ namespace utm::ui
             PerCore
         };
 
+        enum class NetworkFilterMode
+        {
+            All,
+            Tcp,
+            Udp,
+            Listening,
+            Established
+        };
+
         struct NetworkInterfacePerf;
         struct GpuPerf;
         struct PerformanceSubviewBinding;
@@ -106,6 +117,14 @@ namespace utm::ui
         void UpdatePerformanceSubviewSelection();
         void RebuildPerformanceSubviewNavigation();
         bool HandleDynamicPerformanceSubviewCommand(UINT id);
+        bool HandleNetworkCommand(UINT id, UINT code);
+        bool HandleNetworkNotify(const NMHDR *hdr, LPARAM lParam, LRESULT &result);
+        void RefreshNetworkInventory(bool preserveSelection);
+        void ApplyNetworkFilterToList(bool preserveSelection);
+        void RefreshNetworkActionState();
+        int SelectedNetworkIndex() const;
+        bool TerminateSelectedNetworkProcess(std::wstring &errorText);
+        bool CloseSelectedNetworkConnection(std::wstring &errorText);
         bool HandleHardwareCommand(UINT id, UINT code);
         bool HandleHardwareNotify(const NMHDR *hdr, LPARAM lParam, LRESULT &result);
         void RefreshHardwareInventory(bool preserveSelection);
@@ -187,6 +206,28 @@ namespace utm::ui
             bool disableCapable = false;
         };
 
+        struct NetworkConnectionEntry
+        {
+            std::wstring rowKey;
+            std::wstring protocol;
+            std::wstring addressFamily;
+            std::wstring localEndpoint;
+            std::wstring remoteEndpoint;
+            std::wstring stateText;
+            std::wstring processName;
+            DWORD pid = 0;
+            bool isTcp = false;
+            bool isListening = false;
+            bool isEstablished = false;
+            bool canClose = false;
+            bool closeSupported = false;
+
+            DWORD tcpLocalAddrNetwork = 0;
+            DWORD tcpRemoteAddrNetwork = 0;
+            DWORD tcpLocalPortNetwork = 0;
+            DWORD tcpRemotePortNetwork = 0;
+        };
+
         void HandleSnapshotUpdate();
         void RefreshProcessView();
 
@@ -210,6 +251,7 @@ namespace utm::ui
         SidebarNavigation sidebarNavigationComponent_{};
         ProcessListView processListViewComponent_{};
         PerformancePanel performancePanelComponent_{};
+        NetworkPanel networkPanelComponent_{};
         HardwarePanel hardwarePanelComponent_{};
         QuickToolsPanel quickToolsPanelComponent_{};
         StatusBar statusBarComponent_{};
@@ -248,7 +290,17 @@ namespace utm::ui
         HWND perfGraphUpload_ = nullptr;
         HWND perfGraphDownload_ = nullptr;
         HWND perfDetails_ = nullptr;
-        HWND networkPlaceholder_ = nullptr;
+        HWND networkTitle_ = nullptr;
+        HWND networkHint_ = nullptr;
+        HWND networkSearchLabel_ = nullptr;
+        HWND networkSearchEdit_ = nullptr;
+        HWND networkModeLabel_ = nullptr;
+        HWND networkModeCombo_ = nullptr;
+        HWND networkRefreshButton_ = nullptr;
+        HWND networkTerminateButton_ = nullptr;
+        HWND networkCloseButton_ = nullptr;
+        HWND networkList_ = nullptr;
+        HWND networkStatus_ = nullptr;
         HWND hardwarePlaceholder_ = nullptr;
         HWND hardwareHint_ = nullptr;
         HWND hardwareSearchLabel_ = nullptr;
@@ -290,9 +342,11 @@ namespace utm::ui
         core::model::SystemSnapshot snapshot_{};
 
         std::wstring filterText_;
+        std::wstring networkFilterText_;
         std::vector<size_t> visibleRows_;
         int lastVisibleCount_ = -1;
         std::wstring hardwareFilterText_;
+        std::vector<size_t> networkVisibleRows_;
         std::vector<size_t> hardwareVisibleRows_;
 
         std::vector<double> performanceCoreUsage_;
@@ -304,6 +358,7 @@ namespace utm::ui
         std::uint64_t previousNetworkTickMs_ = 0;
         bool networkSamplingReady_ = false;
         std::vector<NetworkInterfacePerf> networkInterfaces_;
+        std::vector<NetworkConnectionEntry> networkConnections_;
         std::vector<GpuPerf> gpuDevices_;
         std::vector<HardwareDeviceEntry> hardwareDevices_;
         std::vector<PerformanceSubviewBinding> perfDynamicNavBindings_;
@@ -311,6 +366,7 @@ namespace utm::ui
         std::wstring perfDynamicNavSignature_;
         size_t activeNetworkInterfaceIndex_ = 0;
         size_t activeGpuIndex_ = 0;
+        std::uint64_t lastNetworkRefreshTickMs_ = 0;
         std::uint64_t lastHardwareRefreshTickMs_ = 0;
 
         double totalCpuPercent_ = 0.0;
@@ -399,6 +455,7 @@ namespace utm::ui
         Section activeSection_ = Section::QuickKillTools;
         PerformanceView activePerformanceView_ = PerformanceView::All;
         CpuGraphMode cpuGraphMode_ = CpuGraphMode::Single;
+        NetworkFilterMode activeNetworkFilterMode_ = NetworkFilterMode::All;
         int perfAllScrollOffset_ = 0;
         int perfAllContentHeight_ = 0;
         int perfCpuCoreScrollOffset_ = 0;

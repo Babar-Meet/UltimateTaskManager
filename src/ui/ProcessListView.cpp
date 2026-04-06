@@ -149,6 +149,15 @@ namespace utm::ui
         UpdatePerformanceMetrics();
         RefreshPerformancePanel();
 
+        if (activeSection_ == Section::Network)
+        {
+            const std::uint64_t nowMs = GetTickCount64();
+            if (nowMs >= lastNetworkRefreshTickMs_ + 1200)
+            {
+                RefreshNetworkInventory(true);
+            }
+        }
+
         if (activeSection_ == Section::Hardware)
         {
             const std::uint64_t nowMs = GetTickCount64();

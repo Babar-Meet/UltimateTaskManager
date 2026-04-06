@@ -89,6 +89,16 @@ namespace
     constexpr int kIdPerfNavDynamicMax = 1199;
     constexpr int kIdPerfCpuModeSingle = 1048;
     constexpr int kIdPerfCpuModePerCore = 1049;
+    constexpr int kIdNetworkHint = 1060;
+    constexpr int kIdNetworkSearchLabel = 1061;
+    constexpr int kIdNetworkSearchEdit = 1062;
+    constexpr int kIdNetworkModeLabel = 1063;
+    constexpr int kIdNetworkModeCombo = 1064;
+    constexpr int kIdNetworkList = 1065;
+    constexpr int kIdNetworkRefreshButton = 1066;
+    constexpr int kIdNetworkTerminateButton = 1067;
+    constexpr int kIdNetworkCloseButton = 1068;
+    constexpr int kIdNetworkStatus = 1069;
     constexpr int kIdHardwareHint = 1050;
     constexpr int kIdHardwareList = 1051;
     constexpr int kIdHardwareStatus = 1052;
@@ -719,6 +729,7 @@ namespace utm::ui
         sidebarNavigationComponent_.Attach(this);
         processListViewComponent_.Attach(this);
         performancePanelComponent_.Attach(this);
+        networkPanelComponent_.Attach(this);
         hardwarePanelComponent_.Attach(this);
         quickToolsPanelComponent_.Attach(this);
         statusBarComponent_.Attach(this);
@@ -915,6 +926,11 @@ namespace utm::ui
                 return notifyResult;
             }
 
+            if (networkPanelComponent_.HandleNotify(hdr, lParam, notifyResult))
+            {
+                return notifyResult;
+            }
+
             if (hardwarePanelComponent_.HandleNotify(hdr, lParam, notifyResult))
             {
                 return notifyResult;
@@ -931,6 +947,7 @@ namespace utm::ui
             if (sidebarNavigationComponent_.HandleCommand(id) ||
                 performancePanelComponent_.HandleCommand(id) ||
                 processListViewComponent_.HandleCommand(id, code) ||
+                networkPanelComponent_.HandleCommand(id, code) ||
                 hardwarePanelComponent_.HandleCommand(id, code) ||
                 quickToolsPanelComponent_.HandleCommand(id))
             {
@@ -966,7 +983,7 @@ namespace utm::ui
                 return reinterpret_cast<LRESULT>(backgroundBrush_);
             }
 
-            if (control == hardwarePlaceholder_)
+            if (control == networkTitle_ || control == hardwarePlaceholder_)
             {
                 SetBkColor(dc, kMainBackgroundColor);
                 SetTextColor(dc, RGB(40, 57, 82));
@@ -989,7 +1006,10 @@ namespace utm::ui
 
             if (control == quickToolsHint_ ||
                 control == performancePlaceholder_ ||
-                control == networkPlaceholder_ ||
+                control == networkHint_ ||
+                control == networkSearchLabel_ ||
+                control == networkModeLabel_ ||
+                control == networkStatus_ ||
                 control == hardwareHint_ ||
                 control == hardwareSearchLabel_ ||
                 control == hardwareStatus_ ||
@@ -1640,10 +1660,10 @@ namespace utm::ui
             instance_,
             nullptr);
 
-        networkPlaceholder_ = CreateWindowExW(
+        networkTitle_ = CreateWindowExW(
             0,
             L"STATIC",
-            L"Network activity and connection breakdowns are queued for the next iteration.\r\n\r\nThis section will include per-process throughput and port visibility.",
+            L"Network Endpoints",
             WS_CHILD,
             0,
             0,
@@ -1653,6 +1673,188 @@ namespace utm::ui
             MenuId(kIdNetworkPlaceholder),
             instance_,
             nullptr);
+
+        networkHint_ = CreateWindowExW(
+            0,
+            L"STATIC",
+            L"Live TCP/UDP endpoint monitor with process ownership and safety actions.",
+            WS_CHILD,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdNetworkHint),
+            instance_,
+            nullptr);
+
+        networkSearchLabel_ = CreateWindowExW(
+            0,
+            L"STATIC",
+            L"Search",
+            WS_CHILD,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdNetworkSearchLabel),
+            instance_,
+            nullptr);
+
+        networkSearchEdit_ = CreateWindowExW(
+            WS_EX_CLIENTEDGE,
+            L"EDIT",
+            nullptr,
+            WS_CHILD | ES_AUTOHSCROLL,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdNetworkSearchEdit),
+            instance_,
+            nullptr);
+
+        networkModeLabel_ = CreateWindowExW(
+            0,
+            L"STATIC",
+            L"Mode",
+            WS_CHILD,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdNetworkModeLabel),
+            instance_,
+            nullptr);
+
+        networkModeCombo_ = CreateWindowExW(
+            0,
+            L"COMBOBOX",
+            nullptr,
+            WS_CHILD | WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdNetworkModeCombo),
+            instance_,
+            nullptr);
+
+        networkRefreshButton_ = CreateWindowExW(
+            0,
+            L"BUTTON",
+            L"Refresh",
+            WS_CHILD | BS_PUSHBUTTON,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdNetworkRefreshButton),
+            instance_,
+            nullptr);
+
+        networkTerminateButton_ = CreateWindowExW(
+            0,
+            L"BUTTON",
+            L"Terminate Owner Process",
+            WS_CHILD | BS_PUSHBUTTON,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdNetworkTerminateButton),
+            instance_,
+            nullptr);
+
+        networkCloseButton_ = CreateWindowExW(
+            0,
+            L"BUTTON",
+            L"Close TCP Connection",
+            WS_CHILD | BS_PUSHBUTTON,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdNetworkCloseButton),
+            instance_,
+            nullptr);
+
+        networkList_ = CreateWindowExW(
+            WS_EX_CLIENTEDGE,
+            WC_LISTVIEWW,
+            nullptr,
+            WS_CHILD | LVS_REPORT | LVS_SHOWSELALWAYS | LVS_SINGLESEL,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdNetworkList),
+            instance_,
+            nullptr);
+
+        networkStatus_ = CreateWindowExW(
+            0,
+            L"STATIC",
+            L"Scanning endpoints...",
+            WS_CHILD,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdNetworkStatus),
+            instance_,
+            nullptr);
+
+        if (networkModeCombo_)
+        {
+            SendMessageW(networkModeCombo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"All Endpoints"));
+            SendMessageW(networkModeCombo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"TCP Only"));
+            SendMessageW(networkModeCombo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"UDP Only"));
+            SendMessageW(networkModeCombo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Listening"));
+            SendMessageW(networkModeCombo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Established"));
+            SendMessageW(networkModeCombo_, CB_SETCURSEL, 0, 0);
+        }
+
+        if (networkList_)
+        {
+            SetWindowTheme(networkList_, L"Explorer", nullptr);
+            ListView_SetExtendedListViewStyle(
+                networkList_,
+                LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_GRIDLINES | LVS_EX_LABELTIP);
+
+            struct NetworkColumn
+            {
+                const wchar_t *title;
+                int width;
+            };
+
+            const NetworkColumn columns[] = {
+                {L"Protocol", 120},
+                {L"Local Endpoint", 250},
+                {L"Remote Endpoint", 250},
+                {L"State", 120},
+                {L"Process", 220},
+                {L"PID", 90}};
+
+            for (int i = 0; i < static_cast<int>(std::size(columns)); ++i)
+            {
+                LVCOLUMNW column{};
+                column.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
+                column.pszText = const_cast<LPWSTR>(columns[i].title);
+                column.cx = columns[i].width;
+                column.iSubItem = i;
+                ListView_InsertColumn(networkList_, i, &column);
+            }
+        }
 
         hardwarePlaceholder_ = CreateWindowExW(
             0,
@@ -2067,7 +2269,8 @@ namespace utm::ui
             !performancePlaceholder_ || !perfNavPanel_ || !perfNavAll_ || !perfNavCpu_ || !perfNavMemory_ || !perfNavDisk_ || !perfNavWifi_ || !perfNavEthernet_ || !perfNavGpu_ ||
             !perfCpuModeSingle_ || !perfCpuModePerCore_ ||
             !perfGraphCpu_ || !perfGraphMemory_ || !perfGraphGpu_ || !perfGraphUpload_ || !perfGraphDownload_ || !perfCoreGrid_ || !perfDetails_ ||
-            !networkPlaceholder_ || !hardwarePlaceholder_ || !hardwareHint_ || !hardwareSearchLabel_ || !hardwareSearchEdit_ || !hardwareList_ || !hardwareRefreshButton_ || !hardwareToggleButton_ || !hardwareStatus_ ||
+            !networkTitle_ || !networkHint_ || !networkSearchLabel_ || !networkSearchEdit_ || !networkModeLabel_ || !networkModeCombo_ || !networkList_ || !networkRefreshButton_ || !networkTerminateButton_ || !networkCloseButton_ || !networkStatus_ ||
+            !hardwarePlaceholder_ || !hardwareHint_ || !hardwareSearchLabel_ || !hardwareSearchEdit_ || !hardwareList_ || !hardwareRefreshButton_ || !hardwareToggleButton_ || !hardwareStatus_ ||
             !servicesPlaceholder_ || !startupAppsPlaceholder_ || !usersPlaceholder_ ||
             !quickToolsTitle_ || !quickToolsHint_ ||
             !quickPortLabel_ || !quickPortEdit_ || !quickKillPortButton_ || !quickPortKillOneButton_ ||
@@ -2107,7 +2310,17 @@ namespace utm::ui
         applyFont(perfCpuModePerCore_, uiBoldFont_);
         applyFont(perfCoreGrid_, uiFont_);
         applyFont(perfDetails_, uiFont_);
-        applyFont(networkPlaceholder_, uiFont_);
+        applyFont(networkTitle_, uiBoldFont_);
+        applyFont(networkHint_, uiFont_);
+        applyFont(networkSearchLabel_, uiBoldFont_);
+        applyFont(networkSearchEdit_, uiFont_);
+        applyFont(networkModeLabel_, uiBoldFont_);
+        applyFont(networkModeCombo_, uiFont_);
+        applyFont(networkList_, uiFont_);
+        applyFont(networkRefreshButton_, uiBoldFont_);
+        applyFont(networkTerminateButton_, uiBoldFont_);
+        applyFont(networkCloseButton_, uiBoldFont_);
+        applyFont(networkStatus_, uiFont_);
         applyFont(hardwarePlaceholder_, uiFont_);
         applyFont(hardwareHint_, uiFont_);
         applyFont(hardwareSearchLabel_, uiBoldFont_);
@@ -2139,6 +2352,7 @@ namespace utm::ui
         RebuildPerformanceSubviewNavigation();
         sidebarNavigationComponent_.UpdateSelection();
         UpdatePerformanceSubviewSelection();
+        RefreshNetworkInventory(false);
         RefreshHardwareInventory(false);
         ApplySectionVisibility();
         return true;
@@ -2193,7 +2407,33 @@ namespace utm::ui
         MoveWindow(processList_, contentX, listTop, contentWidth, listHeight, TRUE);
 
         MoveWindow(performancePlaceholder_, contentX, bodyTop, contentWidth, bodyHeight, TRUE);
-        MoveWindow(networkPlaceholder_, contentX, bodyTop, contentWidth, bodyHeight, TRUE);
+        const int networkRefreshWidth = (std::max)(130, (std::min)(190, contentWidth / 3));
+        const int networkHeaderWidth = (std::max)(140, contentWidth - networkRefreshWidth - 8);
+        MoveWindow(networkTitle_, contentX, bodyTop, networkHeaderWidth, 24, TRUE);
+        MoveWindow(networkRefreshButton_, contentX + contentWidth - networkRefreshWidth, bodyTop, networkRefreshWidth, 30, TRUE);
+        MoveWindow(networkHint_, contentX, bodyTop + 24, contentWidth, 24, TRUE);
+
+        const int networkSearchTop = bodyTop + 50;
+        const int networkModeWidth = (std::max)(150, (std::min)(210, contentWidth / 3));
+        MoveWindow(networkSearchLabel_, contentX, networkSearchTop + 3, 56, 22, TRUE);
+        MoveWindow(networkModeLabel_, contentX + contentWidth - networkModeWidth - 48, networkSearchTop + 3, 42, 22, TRUE);
+        MoveWindow(networkModeCombo_, contentX + contentWidth - networkModeWidth, networkSearchTop, networkModeWidth, 220, TRUE);
+
+        const int networkSearchLeft = contentX + 58;
+        const int networkSearchRight = contentX + contentWidth - networkModeWidth - 54;
+        MoveWindow(networkSearchEdit_, networkSearchLeft, networkSearchTop, (std::max)(120, networkSearchRight - networkSearchLeft), 28, TRUE);
+
+        const int networkActionTop = networkSearchTop + 34;
+        const int networkHalfButtonWidth = (contentWidth - 8) / 2;
+        MoveWindow(networkTerminateButton_, contentX, networkActionTop, networkHalfButtonWidth, 30, TRUE);
+        MoveWindow(networkCloseButton_, contentX + networkHalfButtonWidth + 8, networkActionTop, contentWidth - networkHalfButtonWidth - 8, 30, TRUE);
+
+        const int networkListTop = networkActionTop + 36;
+        const int networkStatusHeight = 24;
+        const int networkListHeight = (std::max)(80, bodyHeight - (networkListTop - bodyTop) - networkStatusHeight - 6);
+        MoveWindow(networkList_, contentX, networkListTop, contentWidth, networkListHeight, TRUE);
+        MoveWindow(networkStatus_, contentX, networkListTop + networkListHeight + 4, contentWidth, networkStatusHeight, TRUE);
+
         const int hardwareButtonWidth = (std::max)(120, (std::min)(180, (contentWidth - 12) / 3));
         const int hardwareHeaderWidth = (std::max)(120, contentWidth - (hardwareButtonWidth * 2) - 16);
         MoveWindow(hardwarePlaceholder_, contentX, bodyTop, hardwareHeaderWidth, 24, TRUE);
@@ -2405,7 +2645,17 @@ namespace utm::ui
         ShowWindow(perfGraphUpload_, showDualThroughput ? SW_SHOW : SW_HIDE);
         ShowWindow(perfGraphDownload_, showDualThroughput ? SW_SHOW : SW_HIDE);
 
-        ShowWindow(networkPlaceholder_, networkTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(networkTitle_, networkTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(networkHint_, networkTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(networkSearchLabel_, networkTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(networkSearchEdit_, networkTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(networkModeLabel_, networkTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(networkModeCombo_, networkTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(networkRefreshButton_, networkTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(networkTerminateButton_, networkTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(networkCloseButton_, networkTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(networkList_, networkTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(networkStatus_, networkTab ? SW_SHOW : SW_HIDE);
         ShowWindow(hardwarePlaceholder_, hardwareTab ? SW_SHOW : SW_HIDE);
         ShowWindow(hardwareHint_, hardwareTab ? SW_SHOW : SW_HIDE);
         ShowWindow(hardwareSearchLabel_, hardwareTab ? SW_SHOW : SW_HIDE);
@@ -2434,6 +2684,11 @@ namespace utm::ui
         ShowWindow(quickBrowseFolderButton_, quickToolsTab ? SW_SHOW : SW_HIDE);
         ShowWindow(quickKillSmartDeleteButton_, quickToolsTab ? SW_SHOW : SW_HIDE);
 
+        if (networkTab)
+        {
+            RefreshNetworkActionState();
+        }
+
         if (hardwareTab)
         {
             RefreshHardwareActionState();
@@ -2460,6 +2715,10 @@ namespace utm::ui
         {
             RebuildPerformanceSubviewNavigation();
             RefreshPerformancePanel();
+        }
+        else if (activeSection_ == Section::Network)
+        {
+            RefreshNetworkInventory(true);
         }
         else if (activeSection_ == Section::Hardware)
         {
