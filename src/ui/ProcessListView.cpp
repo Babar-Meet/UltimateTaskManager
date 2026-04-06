@@ -167,6 +167,15 @@ namespace utm::ui
             }
         }
 
+        if (activeSection_ == Section::Services)
+        {
+            const std::uint64_t nowMs = GetTickCount64();
+            if (nowMs >= lastServicesRefreshTickMs_ + 5000)
+            {
+                RefreshServicesInventory(true);
+            }
+        }
+
         if (activeSection_ == Section::Processes)
         {
             RefreshProcessView();

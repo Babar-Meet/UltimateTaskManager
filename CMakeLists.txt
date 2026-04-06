@@ -15,6 +15,7 @@ set(SOURCES
     src/core/engine/MonitorEngine.cpp
     src/system/ntapi/NtApi.cpp
     src/system/process/ProcessEnumerator.cpp
+    src/system/services/ServiceManager.cpp
     src/tools/process/ProcessActions.cpp
     src/ui/MainWindow.cpp
     src/ui/SidebarNavigation.cpp
@@ -23,6 +24,7 @@ set(SOURCES
     src/ui/PerformancePanel.cpp
     src/ui/NetworkPanel.cpp
     src/ui/HardwarePanel.cpp
+    src/ui/ServicesPanel.cpp
     src/ui/QuickToolsPanel.cpp
     src/ui/StatusBar.cpp
     src/util/logging/Logger.cpp

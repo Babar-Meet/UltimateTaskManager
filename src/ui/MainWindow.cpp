@@ -53,7 +53,6 @@ namespace
     constexpr int kIdPerfPlaceholder = 1025;
     constexpr int kIdNetworkPlaceholder = 1026;
     constexpr int kIdHardwarePlaceholder = 1027;
-    constexpr int kIdServicesPlaceholder = 1028;
     constexpr int kIdStartupAppsPlaceholder = 1029;
     constexpr int kIdUsersPlaceholder = 1030;
     constexpr int kIdQuickToolsTitle = 1031;
@@ -94,6 +93,19 @@ namespace
     constexpr int kIdHardwareToggleButton = 1054;
     constexpr int kIdHardwareSearchLabel = 1055;
     constexpr int kIdHardwareSearchEdit = 1056;
+    constexpr int kIdServicesTitle = 1070;
+    constexpr int kIdServicesHint = 1071;
+    constexpr int kIdServicesSearchLabel = 1072;
+    constexpr int kIdServicesSearchEdit = 1073;
+    constexpr int kIdServicesModeLabel = 1074;
+    constexpr int kIdServicesModeCombo = 1075;
+    constexpr int kIdServicesList = 1076;
+    constexpr int kIdServicesRefreshButton = 1077;
+    constexpr int kIdServicesStartButton = 1078;
+    constexpr int kIdServicesStopButton = 1079;
+    constexpr int kIdServicesRestartButton = 1080;
+    constexpr int kIdServicesOpenConsoleButton = 1081;
+    constexpr int kIdServicesStatus = 1082;
 
     constexpr int kIdQuickToolPortKillAll = 41000;
     constexpr int kIdQuickToolProcessKillAll = 41001;
@@ -720,6 +732,7 @@ namespace utm::ui
         performancePanelComponent_.Attach(this);
         networkPanelComponent_.Attach(this);
         hardwarePanelComponent_.Attach(this);
+        servicesPanelComponent_.Attach(this);
         quickToolsPanelComponent_.Attach(this);
         statusBarComponent_.Attach(this);
     }
@@ -925,6 +938,11 @@ namespace utm::ui
                 return notifyResult;
             }
 
+            if (servicesPanelComponent_.HandleNotify(hdr, lParam, notifyResult))
+            {
+                return notifyResult;
+            }
+
             break;
         }
 
@@ -939,6 +957,7 @@ namespace utm::ui
                 processListViewComponent_.HandleCommand(id, code) ||
                 networkPanelComponent_.HandleCommand(id, code) ||
                 hardwarePanelComponent_.HandleCommand(id, code) ||
+                servicesPanelComponent_.HandleCommand(id, code) ||
                 quickToolsPanelComponent_.HandleCommand(id))
             {
                 return 0;
@@ -973,7 +992,7 @@ namespace utm::ui
                 return reinterpret_cast<LRESULT>(backgroundBrush_);
             }
 
-            if (control == networkTitle_ || control == hardwarePlaceholder_)
+            if (control == networkTitle_ || control == hardwarePlaceholder_ || control == servicesTitle_)
             {
                 SetBkColor(dc, kMainBackgroundColor);
                 SetTextColor(dc, RGB(40, 57, 82));
@@ -1003,7 +1022,10 @@ namespace utm::ui
                 control == hardwareHint_ ||
                 control == hardwareSearchLabel_ ||
                 control == hardwareStatus_ ||
-                control == servicesPlaceholder_ ||
+                control == servicesHint_ ||
+                control == servicesSearchLabel_ ||
+                control == servicesModeLabel_ ||
+                control == servicesStatus_ ||
                 control == startupAppsPlaceholder_ ||
                 control == usersPlaceholder_)
             {
@@ -2003,19 +2025,228 @@ namespace utm::ui
             }
         }
 
-        servicesPlaceholder_ = CreateWindowExW(
+        servicesTitle_ = CreateWindowExW(
             0,
             L"STATIC",
-            L"Services view is wired into navigation.\r\n\r\nNext phase: list all services with state, startup type, and control actions.",
+            L"Windows Services",
             WS_CHILD,
             0,
             0,
             0,
             0,
             hwnd_,
-            MenuId(kIdServicesPlaceholder),
+            MenuId(kIdServicesTitle),
             instance_,
             nullptr);
+
+        servicesHint_ = CreateWindowExW(
+            0,
+            L"STATIC",
+            L"Inspect service state and startup behavior, then start, stop, or restart selected services.",
+            WS_CHILD,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdServicesHint),
+            instance_,
+            nullptr);
+
+        servicesSearchLabel_ = CreateWindowExW(
+            0,
+            L"STATIC",
+            L"Search",
+            WS_CHILD,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdServicesSearchLabel),
+            instance_,
+            nullptr);
+
+        servicesSearchEdit_ = CreateWindowExW(
+            WS_EX_CLIENTEDGE,
+            L"EDIT",
+            nullptr,
+            WS_CHILD | ES_AUTOHSCROLL,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdServicesSearchEdit),
+            instance_,
+            nullptr);
+
+        servicesModeLabel_ = CreateWindowExW(
+            0,
+            L"STATIC",
+            L"Mode",
+            WS_CHILD,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdServicesModeLabel),
+            instance_,
+            nullptr);
+
+        servicesModeCombo_ = CreateWindowExW(
+            0,
+            L"COMBOBOX",
+            nullptr,
+            WS_CHILD | WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdServicesModeCombo),
+            instance_,
+            nullptr);
+
+        servicesRefreshButton_ = CreateWindowExW(
+            0,
+            L"BUTTON",
+            L"Refresh",
+            WS_CHILD | BS_PUSHBUTTON,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdServicesRefreshButton),
+            instance_,
+            nullptr);
+
+        servicesStartButton_ = CreateWindowExW(
+            0,
+            L"BUTTON",
+            L"Start",
+            WS_CHILD | BS_PUSHBUTTON,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdServicesStartButton),
+            instance_,
+            nullptr);
+
+        servicesStopButton_ = CreateWindowExW(
+            0,
+            L"BUTTON",
+            L"Stop",
+            WS_CHILD | BS_PUSHBUTTON,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdServicesStopButton),
+            instance_,
+            nullptr);
+
+        servicesRestartButton_ = CreateWindowExW(
+            0,
+            L"BUTTON",
+            L"Restart",
+            WS_CHILD | BS_PUSHBUTTON,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdServicesRestartButton),
+            instance_,
+            nullptr);
+
+        servicesOpenConsoleButton_ = CreateWindowExW(
+            0,
+            L"BUTTON",
+            L"Open Services Console",
+            WS_CHILD | BS_PUSHBUTTON,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdServicesOpenConsoleButton),
+            instance_,
+            nullptr);
+
+        servicesList_ = CreateWindowExW(
+            WS_EX_CLIENTEDGE,
+            WC_LISTVIEWW,
+            nullptr,
+            WS_CHILD | LVS_REPORT | LVS_SHOWSELALWAYS | LVS_SINGLESEL,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdServicesList),
+            instance_,
+            nullptr);
+
+        servicesStatus_ = CreateWindowExW(
+            0,
+            L"STATIC",
+            L"Scanning services...",
+            WS_CHILD,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdServicesStatus),
+            instance_,
+            nullptr);
+
+        if (servicesModeCombo_)
+        {
+            SendMessageW(servicesModeCombo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"All Services"));
+            SendMessageW(servicesModeCombo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Running"));
+            SendMessageW(servicesModeCombo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Stopped"));
+            SendMessageW(servicesModeCombo_, CB_SETCURSEL, 0, 0);
+        }
+
+        if (servicesList_)
+        {
+            SetWindowTheme(servicesList_, L"Explorer", nullptr);
+            ListView_SetExtendedListViewStyle(
+                servicesList_,
+                LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_GRIDLINES | LVS_EX_LABELTIP);
+
+            struct ServiceColumn
+            {
+                const wchar_t *title;
+                int width;
+            };
+
+            const ServiceColumn columns[] = {
+                {L"Display Name", 240},
+                {L"Service Name", 190},
+                {L"Status", 120},
+                {L"Startup", 150},
+                {L"PID", 70},
+                {L"Log On As", 170},
+                {L"Description", 380}};
+
+            for (int i = 0; i < static_cast<int>(std::size(columns)); ++i)
+            {
+                LVCOLUMNW column{};
+                column.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
+                column.pszText = const_cast<LPWSTR>(columns[i].title);
+                column.cx = columns[i].width;
+                column.iSubItem = i;
+                ListView_InsertColumn(servicesList_, i, &column);
+            }
+        }
 
         startupAppsPlaceholder_ = CreateWindowExW(
             0,
@@ -2276,7 +2507,9 @@ namespace utm::ui
             !perfGraphCpu_ || !perfGraphMemory_ || !perfGraphGpu_ || !perfGraphUpload_ || !perfGraphDownload_ || !perfCoreGrid_ || !perfDetails_ ||
             !networkTitle_ || !networkHint_ || !networkSearchLabel_ || !networkSearchEdit_ || !networkModeLabel_ || !networkModeCombo_ || !networkList_ || !networkRefreshButton_ || !networkTerminateButton_ || !networkCloseButton_ || !networkStatus_ ||
             !hardwarePlaceholder_ || !hardwareHint_ || !hardwareSearchLabel_ || !hardwareSearchEdit_ || !hardwareList_ || !hardwareRefreshButton_ || !hardwareToggleButton_ || !hardwareStatus_ ||
-            !servicesPlaceholder_ || !startupAppsPlaceholder_ || !usersPlaceholder_ ||
+            !servicesTitle_ || !servicesHint_ || !servicesSearchLabel_ || !servicesSearchEdit_ || !servicesModeLabel_ || !servicesModeCombo_ ||
+            !servicesRefreshButton_ || !servicesStartButton_ || !servicesStopButton_ || !servicesRestartButton_ || !servicesOpenConsoleButton_ || !servicesList_ || !servicesStatus_ ||
+            !startupAppsPlaceholder_ || !usersPlaceholder_ ||
             !quickToolsTitle_ || !quickToolsHint_ ||
             !quickPortLabel_ || !quickPortEdit_ || !quickKillPortButton_ || !quickPortKillOneButton_ ||
             !quickProcessLabel_ || !quickProcessEdit_ || !quickKillPatternButton_ || !quickProcessKillOneButton_ ||
@@ -2335,7 +2568,19 @@ namespace utm::ui
         applyFont(hardwareRefreshButton_, uiBoldFont_);
         applyFont(hardwareToggleButton_, uiBoldFont_);
         applyFont(hardwareStatus_, uiFont_);
-        applyFont(servicesPlaceholder_, uiFont_);
+        applyFont(servicesTitle_, uiBoldFont_);
+        applyFont(servicesHint_, uiFont_);
+        applyFont(servicesSearchLabel_, uiBoldFont_);
+        applyFont(servicesSearchEdit_, uiFont_);
+        applyFont(servicesModeLabel_, uiBoldFont_);
+        applyFont(servicesModeCombo_, uiFont_);
+        applyFont(servicesRefreshButton_, uiBoldFont_);
+        applyFont(servicesStartButton_, uiBoldFont_);
+        applyFont(servicesStopButton_, uiBoldFont_);
+        applyFont(servicesRestartButton_, uiBoldFont_);
+        applyFont(servicesOpenConsoleButton_, uiBoldFont_);
+        applyFont(servicesList_, uiFont_);
+        applyFont(servicesStatus_, uiFont_);
         applyFont(startupAppsPlaceholder_, uiFont_);
         applyFont(usersPlaceholder_, uiFont_);
         applyFont(quickToolsTitle_, uiTitleFont_);
@@ -2361,6 +2606,7 @@ namespace utm::ui
         UpdatePerformanceSubviewSelection();
         RefreshNetworkInventory(false);
         RefreshHardwareInventory(false);
+        RefreshServicesInventory(false);
         ApplySectionVisibility();
         return true;
     }
@@ -2483,7 +2729,37 @@ namespace utm::ui
         const int hardwareListHeight = (std::max)(80, bodyHeight - (hardwareListTop - bodyTop) - hardwareStatusHeight - 6);
         MoveWindow(hardwareList_, contentX, hardwareListTop, contentWidth, hardwareListHeight, TRUE);
         MoveWindow(hardwareStatus_, contentX, hardwareListTop + hardwareListHeight + 4, contentWidth, hardwareStatusHeight, TRUE);
-        MoveWindow(servicesPlaceholder_, contentX, bodyTop, contentWidth, bodyHeight, TRUE);
+
+        const int servicesRefreshWidth = (std::max)(100, (std::min)(160, contentWidth / 5));
+        const int servicesConsoleWidth = (std::max)(180, (std::min)(250, contentWidth / 3));
+        const int servicesHeaderWidth = (std::max)(140, contentWidth - servicesRefreshWidth - servicesConsoleWidth - 8);
+        MoveWindow(servicesTitle_, contentX, bodyTop, servicesHeaderWidth, 24, TRUE);
+        MoveWindow(servicesRefreshButton_, contentX + contentWidth - servicesConsoleWidth - servicesRefreshWidth - 8, bodyTop, servicesRefreshWidth, 30, TRUE);
+        MoveWindow(servicesOpenConsoleButton_, contentX + contentWidth - servicesConsoleWidth, bodyTop, servicesConsoleWidth, 30, TRUE);
+        MoveWindow(servicesHint_, contentX, bodyTop + 24, contentWidth, 24, TRUE);
+
+        const int servicesSearchTop = bodyTop + 50;
+        const int servicesModeWidth = (std::max)(150, (std::min)(210, contentWidth / 3));
+        MoveWindow(servicesSearchLabel_, contentX, servicesSearchTop + 3, 56, 22, TRUE);
+        MoveWindow(servicesModeLabel_, contentX + contentWidth - servicesModeWidth - 48, servicesSearchTop + 3, 42, 22, TRUE);
+        MoveWindow(servicesModeCombo_, contentX + contentWidth - servicesModeWidth, servicesSearchTop, servicesModeWidth, 220, TRUE);
+
+        const int servicesSearchLeft = contentX + 58;
+        const int servicesSearchRight = contentX + contentWidth - servicesModeWidth - 54;
+        MoveWindow(servicesSearchEdit_, servicesSearchLeft, servicesSearchTop, (std::max)(120, servicesSearchRight - servicesSearchLeft), 28, TRUE);
+
+        const int servicesActionTop = servicesSearchTop + 34;
+        const int servicesActionWidth = (contentWidth - 16) / 3;
+        MoveWindow(servicesStartButton_, contentX, servicesActionTop, servicesActionWidth, 30, TRUE);
+        MoveWindow(servicesStopButton_, contentX + servicesActionWidth + 8, servicesActionTop, servicesActionWidth, 30, TRUE);
+        MoveWindow(servicesRestartButton_, contentX + (servicesActionWidth + 8) * 2, servicesActionTop, contentWidth - ((servicesActionWidth + 8) * 2), 30, TRUE);
+
+        const int servicesListTop = servicesActionTop + 36;
+        const int servicesStatusHeight = 24;
+        const int servicesListHeight = (std::max)(80, bodyHeight - (servicesListTop - bodyTop) - servicesStatusHeight - 6);
+        MoveWindow(servicesList_, contentX, servicesListTop, contentWidth, servicesListHeight, TRUE);
+        MoveWindow(servicesStatus_, contentX, servicesListTop + servicesListHeight + 4, contentWidth, servicesStatusHeight, TRUE);
+
         MoveWindow(startupAppsPlaceholder_, contentX, bodyTop, contentWidth, bodyHeight, TRUE);
         MoveWindow(usersPlaceholder_, contentX, bodyTop, contentWidth, bodyHeight, TRUE);
 
@@ -2697,7 +2973,19 @@ namespace utm::ui
         ShowWindow(hardwareRefreshButton_, hardwareTab ? SW_SHOW : SW_HIDE);
         ShowWindow(hardwareToggleButton_, hardwareTab ? SW_SHOW : SW_HIDE);
         ShowWindow(hardwareStatus_, hardwareTab ? SW_SHOW : SW_HIDE);
-        ShowWindow(servicesPlaceholder_, servicesTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(servicesTitle_, servicesTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(servicesHint_, servicesTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(servicesSearchLabel_, servicesTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(servicesSearchEdit_, servicesTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(servicesModeLabel_, servicesTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(servicesModeCombo_, servicesTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(servicesRefreshButton_, servicesTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(servicesStartButton_, servicesTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(servicesStopButton_, servicesTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(servicesRestartButton_, servicesTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(servicesOpenConsoleButton_, servicesTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(servicesList_, servicesTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(servicesStatus_, servicesTab ? SW_SHOW : SW_HIDE);
         ShowWindow(startupAppsPlaceholder_, startupTab ? SW_SHOW : SW_HIDE);
         ShowWindow(usersPlaceholder_, usersTab ? SW_SHOW : SW_HIDE);
 
@@ -2725,6 +3013,11 @@ namespace utm::ui
         if (hardwareTab)
         {
             RefreshHardwareActionState();
+        }
+
+        if (servicesTab)
+        {
+            RefreshServicesActionState();
         }
     }
 
@@ -2756,6 +3049,10 @@ namespace utm::ui
         else if (activeSection_ == Section::Hardware)
         {
             RefreshHardwareInventory(true);
+        }
+        else if (activeSection_ == Section::Services)
+        {
+            RefreshServicesInventory(true);
         }
     }
 

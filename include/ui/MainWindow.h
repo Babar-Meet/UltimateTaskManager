@@ -2,11 +2,13 @@
 
 #include "core/engine/MonitorEngine.h"
 #include "core/model/ProcessSnapshot.h"
+#include "system/services/ServiceManager.h"
 #include "ui/HardwarePanel.h"
 #include "ui/NetworkPanel.h"
 #include "ui/PerformancePanel.h"
 #include "ui/ProcessListView.h"
 #include "ui/QuickToolsPanel.h"
+#include "ui/ServicesPanel.h"
 #include "ui/SidebarNavigation.h"
 #include "ui/SidebarRetractable.h"
 #include "ui/StatusBar.h"
@@ -43,6 +45,7 @@ namespace utm::ui
         friend class PerformancePanel;
         friend class NetworkPanel;
         friend class HardwarePanel;
+        friend class ServicesPanel;
         friend class QuickToolsPanel;
         friend class StatusBar;
 
@@ -99,6 +102,13 @@ namespace utm::ui
             Established
         };
 
+        enum class ServiceFilterMode
+        {
+            All,
+            Running,
+            Stopped
+        };
+
         struct NetworkInterfacePerf;
         struct GpuPerf;
         struct PerformanceSubviewBinding;
@@ -134,6 +144,12 @@ namespace utm::ui
         void RefreshHardwareActionState();
         int SelectedHardwareIndex() const;
         bool SetHardwareDeviceEnabled(size_t index, bool enable, std::wstring &errorText);
+        bool HandleServicesCommand(UINT id, UINT code);
+        bool HandleServicesNotify(const NMHDR *hdr, LPARAM lParam, LRESULT &result);
+        void RefreshServicesInventory(bool preserveSelection);
+        void ApplyServicesFilterToList(bool preserveSelection);
+        void RefreshServicesActionState();
+        int SelectedServiceIndex() const;
         const NetworkInterfacePerf *GetActiveNetworkInterface() const;
         const GpuPerf *GetActiveGpu() const;
         void NormalizeDynamicPerformanceSelection();
@@ -256,6 +272,7 @@ namespace utm::ui
         PerformancePanel performancePanelComponent_{};
         NetworkPanel networkPanelComponent_{};
         HardwarePanel hardwarePanelComponent_{};
+        ServicesPanel servicesPanelComponent_{};
         QuickToolsPanel quickToolsPanelComponent_{};
         StatusBar statusBarComponent_{};
 
@@ -313,7 +330,19 @@ namespace utm::ui
         HWND hardwareRefreshButton_ = nullptr;
         HWND hardwareToggleButton_ = nullptr;
         HWND hardwareStatus_ = nullptr;
-        HWND servicesPlaceholder_ = nullptr;
+        HWND servicesTitle_ = nullptr;
+        HWND servicesHint_ = nullptr;
+        HWND servicesSearchLabel_ = nullptr;
+        HWND servicesSearchEdit_ = nullptr;
+        HWND servicesModeLabel_ = nullptr;
+        HWND servicesModeCombo_ = nullptr;
+        HWND servicesRefreshButton_ = nullptr;
+        HWND servicesStartButton_ = nullptr;
+        HWND servicesStopButton_ = nullptr;
+        HWND servicesRestartButton_ = nullptr;
+        HWND servicesOpenConsoleButton_ = nullptr;
+        HWND servicesList_ = nullptr;
+        HWND servicesStatus_ = nullptr;
         HWND startupAppsPlaceholder_ = nullptr;
         HWND usersPlaceholder_ = nullptr;
         HWND quickToolsTitle_ = nullptr;
@@ -350,8 +379,10 @@ namespace utm::ui
         std::vector<size_t> visibleRows_;
         int lastVisibleCount_ = -1;
         std::wstring hardwareFilterText_;
+        std::wstring servicesFilterText_;
         std::vector<size_t> networkVisibleRows_;
         std::vector<size_t> hardwareVisibleRows_;
+        std::vector<size_t> servicesVisibleRows_;
 
         std::vector<double> performanceCoreUsage_;
         std::vector<std::deque<double>> performanceCoreHistory_;
@@ -365,6 +396,7 @@ namespace utm::ui
         std::vector<NetworkConnectionEntry> networkConnections_;
         std::vector<GpuPerf> gpuDevices_;
         std::vector<HardwareDeviceEntry> hardwareDevices_;
+        std::vector<system::services::ServiceInfo> services_;
         std::vector<PerformanceSubviewBinding> perfDynamicNavBindings_;
         size_t perfStaticDynamicButtonCount_ = 0;
         std::wstring perfDynamicNavSignature_;
@@ -372,6 +404,7 @@ namespace utm::ui
         size_t activeGpuIndex_ = 0;
         std::uint64_t lastNetworkRefreshTickMs_ = 0;
         std::uint64_t lastHardwareRefreshTickMs_ = 0;
+        std::uint64_t lastServicesRefreshTickMs_ = 0;
 
         double totalCpuPercent_ = 0.0;
         double memoryPercent_ = 0.0;
@@ -460,6 +493,7 @@ namespace utm::ui
         PerformanceView activePerformanceView_ = PerformanceView::All;
         CpuGraphMode cpuGraphMode_ = CpuGraphMode::Single;
         NetworkFilterMode activeNetworkFilterMode_ = NetworkFilterMode::All;
+        ServiceFilterMode activeServiceFilterMode_ = ServiceFilterMode::All;
         int perfAllScrollOffset_ = 0;
         int perfAllContentHeight_ = 0;
         int perfCpuCoreScrollOffset_ = 0;
