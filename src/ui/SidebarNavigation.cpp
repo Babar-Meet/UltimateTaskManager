@@ -1,18 +1,7 @@
 #include "ui/SidebarNavigation.h"
 
 #include "ui/MainWindow.h"
-
-namespace
-{
-    constexpr UINT kIdNavProcesses = 1010;
-    constexpr UINT kIdNavPerformance = 1011;
-    constexpr UINT kIdNavNetwork = 1012;
-    constexpr UINT kIdNavHardware = 1013;
-    constexpr UINT kIdNavServices = 1014;
-    constexpr UINT kIdNavStartupApps = 1015;
-    constexpr UINT kIdNavUsers = 1016;
-    constexpr UINT kIdNavQuickTools = 1017;
-}
+#include "ui/SidebarIds.h"
 
 namespace utm::ui
 {
@@ -31,28 +20,28 @@ namespace utm::ui
 
         switch (id)
         {
-        case kIdNavProcesses:
+        case sidebar_ids::kNavProcesses:
             owner_->SetActiveSection(MainWindow::Section::Processes);
             return true;
-        case kIdNavPerformance:
+        case sidebar_ids::kNavPerformance:
             owner_->SetActiveSection(MainWindow::Section::Performance);
             return true;
-        case kIdNavNetwork:
+        case sidebar_ids::kNavNetwork:
             owner_->SetActiveSection(MainWindow::Section::Network);
             return true;
-        case kIdNavHardware:
+        case sidebar_ids::kNavHardware:
             owner_->SetActiveSection(MainWindow::Section::Hardware);
             return true;
-        case kIdNavServices:
+        case sidebar_ids::kNavServices:
             owner_->SetActiveSection(MainWindow::Section::Services);
             return true;
-        case kIdNavStartupApps:
+        case sidebar_ids::kNavStartupApps:
             owner_->SetActiveSection(MainWindow::Section::StartupApps);
             return true;
-        case kIdNavUsers:
+        case sidebar_ids::kNavUsers:
             owner_->SetActiveSection(MainWindow::Section::Users);
             return true;
-        case kIdNavQuickTools:
+        case sidebar_ids::kNavQuickTools:
             owner_->SetActiveSection(MainWindow::Section::QuickKillTools);
             return true;
         default:
@@ -67,36 +56,40 @@ namespace utm::ui
             return;
         }
 
-        int checked = kIdNavProcesses;
+        int checked = static_cast<int>(sidebar_ids::kNavProcesses);
         switch (owner_->activeSection_)
         {
         case MainWindow::Section::Processes:
-            checked = kIdNavProcesses;
+            checked = static_cast<int>(sidebar_ids::kNavProcesses);
             break;
         case MainWindow::Section::Performance:
-            checked = kIdNavPerformance;
+            checked = static_cast<int>(sidebar_ids::kNavPerformance);
             break;
         case MainWindow::Section::Network:
-            checked = kIdNavNetwork;
+            checked = static_cast<int>(sidebar_ids::kNavNetwork);
             break;
         case MainWindow::Section::Hardware:
-            checked = kIdNavHardware;
+            checked = static_cast<int>(sidebar_ids::kNavHardware);
             break;
         case MainWindow::Section::Services:
-            checked = kIdNavServices;
+            checked = static_cast<int>(sidebar_ids::kNavServices);
             break;
         case MainWindow::Section::StartupApps:
-            checked = kIdNavStartupApps;
+            checked = static_cast<int>(sidebar_ids::kNavStartupApps);
             break;
         case MainWindow::Section::Users:
-            checked = kIdNavUsers;
+            checked = static_cast<int>(sidebar_ids::kNavUsers);
             break;
         case MainWindow::Section::QuickKillTools:
-            checked = kIdNavQuickTools;
+            checked = static_cast<int>(sidebar_ids::kNavQuickTools);
             break;
         }
 
-        CheckRadioButton(owner_->hwnd_, kIdNavProcesses, kIdNavQuickTools, checked);
+        CheckRadioButton(
+            owner_->hwnd_,
+            static_cast<int>(sidebar_ids::kNavProcesses),
+            static_cast<int>(sidebar_ids::kNavQuickTools),
+            checked);
     }
 
     std::wstring SidebarNavigation::ActiveSectionTitle() const

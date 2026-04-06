@@ -18,6 +18,7 @@ set(SOURCES
     src/tools/process/ProcessActions.cpp
     src/ui/MainWindow.cpp
     src/ui/SidebarNavigation.cpp
+    src/ui/SidebarRetractable.cpp
     src/ui/ProcessListView.cpp
     src/ui/PerformancePanel.cpp
     src/ui/NetworkPanel.cpp

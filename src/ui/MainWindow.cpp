@@ -1,6 +1,7 @@
 ﻿#include <winsock2.h>
 
 #include "ui/MainWindow.h"
+#include "ui/SidebarIds.h"
 
 #include "system/ntapi/NtApi.h"
 #include "tools/process/ProcessActions.h"
@@ -36,26 +37,13 @@
 namespace
 {
 
-    constexpr int kSidebarWidth = 252;
     constexpr int kPadding = 12;
     constexpr int kStatusHeight = 28;
     constexpr int kFilterHeight = 28;
-    constexpr int kNavButtonHeight = 34;
 
     constexpr COLORREF kMainBackgroundColor = RGB(243, 246, 252);
     constexpr COLORREF kSidebarBackgroundColor = RGB(234, 239, 248);
     constexpr COLORREF kCardColor = RGB(255, 255, 255);
-
-    constexpr int kIdSidebar = 1000;
-    constexpr int kIdSidebarTitle = 1001;
-    constexpr int kIdNavProcesses = 1010;
-    constexpr int kIdNavPerformance = 1011;
-    constexpr int kIdNavNetwork = 1012;
-    constexpr int kIdNavHardware = 1013;
-    constexpr int kIdNavServices = 1014;
-    constexpr int kIdNavStartupApps = 1015;
-    constexpr int kIdNavUsers = 1016;
-    constexpr int kIdNavQuickTools = 1017;
 
     constexpr int kIdSectionTitle = 1020;
     constexpr int kIdFilterLabel = 1021;
@@ -727,6 +715,7 @@ namespace utm::ui
         UpdateNetworkAdapterInfo();
 
         sidebarNavigationComponent_.Attach(this);
+        sidebarRetractableComponent_.Attach(this);
         processListViewComponent_.Attach(this);
         performancePanelComponent_.Attach(this);
         networkPanelComponent_.Attach(this);
@@ -944,7 +933,8 @@ namespace utm::ui
             const UINT id = LOWORD(wParam);
             const UINT code = HIWORD(wParam);
 
-            if (sidebarNavigationComponent_.HandleCommand(id) ||
+            if (sidebarRetractableComponent_.HandleCommand(id) ||
+                sidebarNavigationComponent_.HandleCommand(id) ||
                 performancePanelComponent_.HandleCommand(id) ||
                 processListViewComponent_.HandleCommand(id, code) ||
                 networkPanelComponent_.HandleCommand(id, code) ||
@@ -1054,7 +1044,8 @@ namespace utm::ui
         {
             HDC dc = reinterpret_cast<HDC>(wParam);
             HWND control = reinterpret_cast<HWND>(lParam);
-            if (sidebarNavigationComponent_.IsSidebarButtonControl(control))
+            if (sidebarNavigationComponent_.IsSidebarButtonControl(control) ||
+                sidebarRetractableComponent_.IsSidebarToggleControl(control))
             {
                 SetBkColor(dc, kSidebarBackgroundColor);
                 SetTextColor(dc, RGB(32, 48, 76));
@@ -1409,7 +1400,7 @@ namespace utm::ui
             0,
             0,
             hwnd_,
-            MenuId(kIdSidebar),
+            MenuId(static_cast<int>(sidebar_ids::kSidebar)),
             instance_,
             nullptr);
 
@@ -1431,7 +1422,21 @@ namespace utm::ui
             0,
             0,
             sidebar_,
-            MenuId(kIdSidebarTitle),
+            MenuId(static_cast<int>(sidebar_ids::kSidebarTitle)),
+            instance_,
+            nullptr);
+
+        sidebarToggle_ = CreateWindowExW(
+            0,
+            L"BUTTON",
+            L"|||",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(static_cast<int>(sidebar_ids::kSidebarToggle)),
             instance_,
             nullptr);
 
@@ -1452,14 +1457,14 @@ namespace utm::ui
                 nullptr);
         };
 
-        navProcesses_ = createNavButton(kIdNavProcesses, L"Processes", WS_GROUP);
-        navPerformance_ = createNavButton(kIdNavPerformance, L"Performance", 0);
-        navNetwork_ = createNavButton(kIdNavNetwork, L"Network", 0);
-        navHardware_ = createNavButton(kIdNavHardware, L"Hardware", 0);
-        navServices_ = createNavButton(kIdNavServices, L"Services", 0);
-        navStartupApps_ = createNavButton(kIdNavStartupApps, L"Startup Apps", 0);
-        navUsers_ = createNavButton(kIdNavUsers, L"Users", 0);
-        navQuickTools_ = createNavButton(kIdNavQuickTools, L"Quick Kill Tools", 0);
+        navProcesses_ = createNavButton(static_cast<int>(sidebar_ids::kNavProcesses), L"Processes", WS_GROUP);
+        navPerformance_ = createNavButton(static_cast<int>(sidebar_ids::kNavPerformance), L"Performance", 0);
+        navNetwork_ = createNavButton(static_cast<int>(sidebar_ids::kNavNetwork), L"Network", 0);
+        navHardware_ = createNavButton(static_cast<int>(sidebar_ids::kNavHardware), L"Hardware", 0);
+        navServices_ = createNavButton(static_cast<int>(sidebar_ids::kNavServices), L"Services", 0);
+        navStartupApps_ = createNavButton(static_cast<int>(sidebar_ids::kNavStartupApps), L"Startup Apps", 0);
+        navUsers_ = createNavButton(static_cast<int>(sidebar_ids::kNavUsers), L"Users", 0);
+        navQuickTools_ = createNavButton(static_cast<int>(sidebar_ids::kNavQuickTools), L"Quick Kill Tools", 0);
 
         sectionTitle_ = CreateWindowExW(
             0,
@@ -2264,7 +2269,7 @@ namespace utm::ui
             instance_,
             nullptr);
 
-        if (!sidebarTitle_ || !navProcesses_ || !navPerformance_ || !navNetwork_ || !navHardware_ || !navServices_ || !navStartupApps_ || !navUsers_ || !navQuickTools_ ||
+        if (!sidebarTitle_ || !sidebarToggle_ || !navProcesses_ || !navPerformance_ || !navNetwork_ || !navHardware_ || !navServices_ || !navStartupApps_ || !navUsers_ || !navQuickTools_ ||
             !sectionTitle_ || !filterLabel_ || !filterEdit_ || !processList_ ||
             !performancePlaceholder_ || !perfNavPanel_ || !perfNavAll_ || !perfNavCpu_ || !perfNavMemory_ || !perfNavDisk_ || !perfNavWifi_ || !perfNavEthernet_ || !perfNavGpu_ ||
             !perfCpuModeSingle_ || !perfCpuModePerCore_ ||
@@ -2285,6 +2290,7 @@ namespace utm::ui
         }
 
         applyFont(sidebarTitle_, uiTitleFont_);
+        applyFont(sidebarToggle_, uiBoldFont_);
         applyFont(navProcesses_, uiBoldFont_);
         applyFont(navPerformance_, uiBoldFont_);
         applyFont(navNetwork_, uiBoldFont_);
@@ -2349,6 +2355,7 @@ namespace utm::ui
         applyFont(quickKillSmartDeleteButton_, uiBoldFont_);
         applyFont(statusText_, uiFont_);
 
+        sidebarRetractableComponent_.ApplyMode();
         RebuildPerformanceSubviewNavigation();
         sidebarNavigationComponent_.UpdateSelection();
         UpdatePerformanceSubviewSelection();
@@ -2366,30 +2373,56 @@ namespace utm::ui
         const int width = (std::max)(300, static_cast<int>(client.right - client.left));
         const int height = (std::max)(220, static_cast<int>(client.bottom - client.top));
 
-        MoveWindow(sidebar_, 0, 0, kSidebarWidth, height, TRUE);
+        const SidebarRetractable::Metrics sidebarMetrics = sidebarRetractableComponent_.CurrentMetrics();
 
-        const int navX = 14;
-        const int navWidth = kSidebarWidth - (2 * navX);
-        int navY = 66;
+        MoveWindow(sidebar_, 0, 0, sidebarMetrics.sidebarWidth, height, TRUE);
+        MoveWindow(
+            sidebarToggle_,
+            sidebarMetrics.toggleX,
+            sidebarMetrics.toggleY,
+            sidebarMetrics.toggleWidth,
+            sidebarMetrics.toggleHeight,
+            TRUE);
 
-        MoveWindow(sidebarTitle_, navX, 16, navWidth, 36, TRUE);
-        MoveWindow(navProcesses_, navX, navY, navWidth, kNavButtonHeight, TRUE);
-        navY += kNavButtonHeight + 6;
-        MoveWindow(navPerformance_, navX, navY, navWidth, kNavButtonHeight, TRUE);
-        navY += kNavButtonHeight + 6;
-        MoveWindow(navNetwork_, navX, navY, navWidth, kNavButtonHeight, TRUE);
-        navY += kNavButtonHeight + 6;
-        MoveWindow(navHardware_, navX, navY, navWidth, kNavButtonHeight, TRUE);
-        navY += kNavButtonHeight + 6;
-        MoveWindow(navServices_, navX, navY, navWidth, kNavButtonHeight, TRUE);
-        navY += kNavButtonHeight + 6;
-        MoveWindow(navStartupApps_, navX, navY, navWidth, kNavButtonHeight, TRUE);
-        navY += kNavButtonHeight + 6;
-        MoveWindow(navUsers_, navX, navY, navWidth, kNavButtonHeight, TRUE);
-        navY += kNavButtonHeight + 14;
-        MoveWindow(navQuickTools_, navX, navY, navWidth, kNavButtonHeight, TRUE);
+        if (sidebarMetrics.showTitle)
+        {
+            ShowWindow(sidebarTitle_, SW_SHOW);
+            MoveWindow(
+                sidebarTitle_,
+                sidebarMetrics.titleX,
+                sidebarMetrics.titleY,
+                sidebarMetrics.titleWidth,
+                sidebarMetrics.titleHeight,
+                TRUE);
+        }
+        else
+        {
+            ShowWindow(sidebarTitle_, SW_HIDE);
+        }
 
-        const int contentX = kSidebarWidth + 18;
+        const int navX = sidebarMetrics.navInsetX;
+        const int navWidth = sidebarMetrics.sidebarWidth - (2 * navX);
+        const int navButtonHeight = sidebarMetrics.navButtonHeight;
+        const int navGap = sidebarMetrics.navGap;
+        int navY = sidebarMetrics.navStartY;
+
+        MoveWindow(navProcesses_, navX, navY, navWidth, navButtonHeight, TRUE);
+        navY += navButtonHeight + navGap;
+        MoveWindow(navPerformance_, navX, navY, navWidth, navButtonHeight, TRUE);
+        navY += navButtonHeight + navGap;
+        MoveWindow(navNetwork_, navX, navY, navWidth, navButtonHeight, TRUE);
+        navY += navButtonHeight + navGap;
+        MoveWindow(navHardware_, navX, navY, navWidth, navButtonHeight, TRUE);
+        navY += navButtonHeight + navGap;
+        MoveWindow(navServices_, navX, navY, navWidth, navButtonHeight, TRUE);
+        navY += navButtonHeight + navGap;
+        MoveWindow(navStartupApps_, navX, navY, navWidth, navButtonHeight, TRUE);
+        navY += navButtonHeight + navGap;
+        MoveWindow(navUsers_, navX, navY, navWidth, navButtonHeight, TRUE);
+        navY += navButtonHeight + sidebarMetrics.quickToolsGap;
+        MoveWindow(navQuickTools_, navX, navY, navWidth, navButtonHeight, TRUE);
+
+        const int contentX = sidebarMetrics.sidebarWidth + sidebarMetrics.contentGap;
         const int contentWidth = (std::max)(120, width - contentX - 18);
         const int statusY = (std::max)(140, height - kStatusHeight - kPadding);
 

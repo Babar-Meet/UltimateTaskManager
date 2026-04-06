@@ -8,6 +8,7 @@
 #include "ui/ProcessListView.h"
 #include "ui/QuickToolsPanel.h"
 #include "ui/SidebarNavigation.h"
+#include "ui/SidebarRetractable.h"
 #include "ui/StatusBar.h"
 
 #include <windows.h>
@@ -37,6 +38,7 @@ namespace utm::ui
 
     private:
         friend class SidebarNavigation;
+        friend class SidebarRetractable;
         friend class ProcessListView;
         friend class PerformancePanel;
         friend class NetworkPanel;
@@ -249,6 +251,7 @@ namespace utm::ui
         HWND hwnd_ = nullptr;
 
         SidebarNavigation sidebarNavigationComponent_{};
+        SidebarRetractable sidebarRetractableComponent_{};
         ProcessListView processListViewComponent_{};
         PerformancePanel performancePanelComponent_{};
         NetworkPanel networkPanelComponent_{};
@@ -258,6 +261,7 @@ namespace utm::ui
 
         HWND sidebar_ = nullptr;
         HWND sidebarTitle_ = nullptr;
+        HWND sidebarToggle_ = nullptr;
         HWND navProcesses_ = nullptr;
         HWND navPerformance_ = nullptr;
         HWND navNetwork_ = nullptr;
