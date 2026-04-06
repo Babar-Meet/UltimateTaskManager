@@ -149,6 +149,15 @@ namespace utm::ui
         UpdatePerformanceMetrics();
         RefreshPerformancePanel();
 
+        if (activeSection_ == Section::Hardware)
+        {
+            const std::uint64_t nowMs = GetTickCount64();
+            if (nowMs >= lastHardwareRefreshTickMs_ + 12000)
+            {
+                RefreshHardwareInventory(true);
+            }
+        }
+
         if (activeSection_ == Section::Processes)
         {
             RefreshProcessView();

@@ -2,6 +2,7 @@
 
 #include "core/engine/MonitorEngine.h"
 #include "core/model/ProcessSnapshot.h"
+#include "ui/HardwarePanel.h"
 #include "ui/PerformancePanel.h"
 #include "ui/ProcessListView.h"
 #include "ui/QuickToolsPanel.h"
@@ -37,6 +38,7 @@ namespace utm::ui
         friend class SidebarNavigation;
         friend class ProcessListView;
         friend class PerformancePanel;
+        friend class HardwarePanel;
         friend class QuickToolsPanel;
         friend class StatusBar;
 
@@ -87,6 +89,7 @@ namespace utm::ui
         struct NetworkInterfacePerf;
         struct GpuPerf;
         struct PerformanceSubviewBinding;
+        struct HardwareDeviceEntry;
 
         static LRESULT CALLBACK WndProcSetup(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
         static LRESULT CALLBACK WndProcThunk(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
@@ -103,6 +106,13 @@ namespace utm::ui
         void UpdatePerformanceSubviewSelection();
         void RebuildPerformanceSubviewNavigation();
         bool HandleDynamicPerformanceSubviewCommand(UINT id);
+        bool HandleHardwareCommand(UINT id, UINT code);
+        bool HandleHardwareNotify(const NMHDR *hdr, LPARAM lParam, LRESULT &result);
+        void RefreshHardwareInventory(bool preserveSelection);
+        void ApplyHardwareFilterToList(bool preserveSelection);
+        void RefreshHardwareActionState();
+        int SelectedHardwareIndex() const;
+        bool SetHardwareDeviceEnabled(size_t index, bool enable, std::wstring &errorText);
         const NetworkInterfacePerf *GetActiveNetworkInterface() const;
         const GpuPerf *GetActiveGpu() const;
         void NormalizeDynamicPerformanceSelection();
@@ -166,6 +176,17 @@ namespace utm::ui
             std::wstring label;
         };
 
+        struct HardwareDeviceEntry
+        {
+            std::wstring instanceId;
+            std::wstring name;
+            std::wstring className;
+            std::wstring location;
+            std::wstring statusText;
+            bool enabled = false;
+            bool disableCapable = false;
+        };
+
         void HandleSnapshotUpdate();
         void RefreshProcessView();
 
@@ -189,6 +210,7 @@ namespace utm::ui
         SidebarNavigation sidebarNavigationComponent_{};
         ProcessListView processListViewComponent_{};
         PerformancePanel performancePanelComponent_{};
+        HardwarePanel hardwarePanelComponent_{};
         QuickToolsPanel quickToolsPanelComponent_{};
         StatusBar statusBarComponent_{};
 
@@ -228,6 +250,13 @@ namespace utm::ui
         HWND perfDetails_ = nullptr;
         HWND networkPlaceholder_ = nullptr;
         HWND hardwarePlaceholder_ = nullptr;
+        HWND hardwareHint_ = nullptr;
+        HWND hardwareSearchLabel_ = nullptr;
+        HWND hardwareSearchEdit_ = nullptr;
+        HWND hardwareList_ = nullptr;
+        HWND hardwareRefreshButton_ = nullptr;
+        HWND hardwareToggleButton_ = nullptr;
+        HWND hardwareStatus_ = nullptr;
         HWND servicesPlaceholder_ = nullptr;
         HWND startupAppsPlaceholder_ = nullptr;
         HWND usersPlaceholder_ = nullptr;
@@ -263,6 +292,8 @@ namespace utm::ui
         std::wstring filterText_;
         std::vector<size_t> visibleRows_;
         int lastVisibleCount_ = -1;
+        std::wstring hardwareFilterText_;
+        std::vector<size_t> hardwareVisibleRows_;
 
         std::vector<double> performanceCoreUsage_;
         std::vector<std::deque<double>> performanceCoreHistory_;
@@ -274,11 +305,13 @@ namespace utm::ui
         bool networkSamplingReady_ = false;
         std::vector<NetworkInterfacePerf> networkInterfaces_;
         std::vector<GpuPerf> gpuDevices_;
+        std::vector<HardwareDeviceEntry> hardwareDevices_;
         std::vector<PerformanceSubviewBinding> perfDynamicNavBindings_;
         size_t perfStaticDynamicButtonCount_ = 0;
         std::wstring perfDynamicNavSignature_;
         size_t activeNetworkInterfaceIndex_ = 0;
         size_t activeGpuIndex_ = 0;
+        std::uint64_t lastHardwareRefreshTickMs_ = 0;
 
         double totalCpuPercent_ = 0.0;
         double memoryPercent_ = 0.0;
@@ -332,6 +365,8 @@ namespace utm::ui
 
         std::deque<double> cpuHistory_;
         std::deque<double> memoryHistory_;
+        std::deque<double> memoryUtilizationHistory_;
+        std::deque<double> memoryHeadroomHistory_;
         std::deque<double> memoryAvailableHistory_;
         std::deque<double> memoryCommittedHistory_;
         std::deque<double> gpuHistory_;

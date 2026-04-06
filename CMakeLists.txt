@@ -20,6 +20,7 @@ set(SOURCES
     src/ui/SidebarNavigation.cpp
     src/ui/ProcessListView.cpp
     src/ui/PerformancePanel.cpp
+    src/ui/HardwarePanel.cpp
     src/ui/QuickToolsPanel.cpp
     src/ui/StatusBar.cpp
     src/util/logging/Logger.cpp

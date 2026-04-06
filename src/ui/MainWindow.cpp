@@ -89,6 +89,13 @@ namespace
     constexpr int kIdPerfNavDynamicMax = 1199;
     constexpr int kIdPerfCpuModeSingle = 1048;
     constexpr int kIdPerfCpuModePerCore = 1049;
+    constexpr int kIdHardwareHint = 1050;
+    constexpr int kIdHardwareList = 1051;
+    constexpr int kIdHardwareStatus = 1052;
+    constexpr int kIdHardwareRefreshButton = 1053;
+    constexpr int kIdHardwareToggleButton = 1054;
+    constexpr int kIdHardwareSearchLabel = 1055;
+    constexpr int kIdHardwareSearchEdit = 1056;
 
     constexpr int kIdQuickToolPortKillAll = 41000;
     constexpr int kIdQuickToolProcessKillAll = 41001;
@@ -712,6 +719,7 @@ namespace utm::ui
         sidebarNavigationComponent_.Attach(this);
         processListViewComponent_.Attach(this);
         performancePanelComponent_.Attach(this);
+        hardwarePanelComponent_.Attach(this);
         quickToolsPanelComponent_.Attach(this);
         statusBarComponent_.Attach(this);
     }
@@ -907,6 +915,11 @@ namespace utm::ui
                 return notifyResult;
             }
 
+            if (hardwarePanelComponent_.HandleNotify(hdr, lParam, notifyResult))
+            {
+                return notifyResult;
+            }
+
             break;
         }
 
@@ -918,6 +931,7 @@ namespace utm::ui
             if (sidebarNavigationComponent_.HandleCommand(id) ||
                 performancePanelComponent_.HandleCommand(id) ||
                 processListViewComponent_.HandleCommand(id, code) ||
+                hardwarePanelComponent_.HandleCommand(id, code) ||
                 quickToolsPanelComponent_.HandleCommand(id))
             {
                 return 0;
@@ -952,6 +966,13 @@ namespace utm::ui
                 return reinterpret_cast<LRESULT>(backgroundBrush_);
             }
 
+            if (control == hardwarePlaceholder_)
+            {
+                SetBkColor(dc, kMainBackgroundColor);
+                SetTextColor(dc, RGB(40, 57, 82));
+                return reinterpret_cast<LRESULT>(backgroundBrush_);
+            }
+
             if (control == perfNavPanel_ || control == perfDetails_)
             {
                 SetBkColor(dc, kCardColor);
@@ -969,7 +990,9 @@ namespace utm::ui
             if (control == quickToolsHint_ ||
                 control == performancePlaceholder_ ||
                 control == networkPlaceholder_ ||
-                control == hardwarePlaceholder_ ||
+                control == hardwareHint_ ||
+                control == hardwareSearchLabel_ ||
+                control == hardwareStatus_ ||
                 control == servicesPlaceholder_ ||
                 control == startupAppsPlaceholder_ ||
                 control == usersPlaceholder_)
@@ -1634,7 +1657,7 @@ namespace utm::ui
         hardwarePlaceholder_ = CreateWindowExW(
             0,
             L"STATIC",
-            L"Hardware insights are staged next.\r\n\r\nPlanned content: storage devices, adapters, and peripheral status.",
+            L"Hardware Devices",
             WS_CHILD,
             0,
             0,
@@ -1644,6 +1667,134 @@ namespace utm::ui
             MenuId(kIdHardwarePlaceholder),
             instance_,
             nullptr);
+
+        hardwareHint_ = CreateWindowExW(
+            0,
+            L"STATIC",
+            L"Dynamic inventory of detected hardware components and ports. Select a device, then disable or enable it.",
+            WS_CHILD,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdHardwareHint),
+            instance_,
+            nullptr);
+
+        hardwareSearchLabel_ = CreateWindowExW(
+            0,
+            L"STATIC",
+            L"Search",
+            WS_CHILD,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdHardwareSearchLabel),
+            instance_,
+            nullptr);
+
+        hardwareSearchEdit_ = CreateWindowExW(
+            WS_EX_CLIENTEDGE,
+            L"EDIT",
+            nullptr,
+            WS_CHILD | ES_AUTOHSCROLL,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdHardwareSearchEdit),
+            instance_,
+            nullptr);
+
+        hardwareRefreshButton_ = CreateWindowExW(
+            0,
+            L"BUTTON",
+            L"Refresh Devices",
+            WS_CHILD | BS_PUSHBUTTON,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdHardwareRefreshButton),
+            instance_,
+            nullptr);
+
+        hardwareToggleButton_ = CreateWindowExW(
+            0,
+            L"BUTTON",
+            L"Disable Selected",
+            WS_CHILD | BS_PUSHBUTTON,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdHardwareToggleButton),
+            instance_,
+            nullptr);
+
+        hardwareList_ = CreateWindowExW(
+            WS_EX_CLIENTEDGE,
+            WC_LISTVIEWW,
+            nullptr,
+            WS_CHILD | LVS_REPORT | LVS_SHOWSELALWAYS | LVS_SINGLESEL,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdHardwareList),
+            instance_,
+            nullptr);
+
+        hardwareStatus_ = CreateWindowExW(
+            0,
+            L"STATIC",
+            L"Scanning hardware devices...",
+            WS_CHILD,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdHardwareStatus),
+            instance_,
+            nullptr);
+
+        if (hardwareList_)
+        {
+            SetWindowTheme(hardwareList_, L"Explorer", nullptr);
+            ListView_SetExtendedListViewStyle(
+                hardwareList_,
+                LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_GRIDLINES | LVS_EX_LABELTIP);
+
+            struct HardwareColumn
+            {
+                const wchar_t *title;
+                int width;
+            };
+
+            const HardwareColumn columns[] = {
+                {L"Device", 340},
+                {L"Class", 170},
+                {L"State", 120},
+                {L"Location", 290}};
+
+            for (int i = 0; i < static_cast<int>(std::size(columns)); ++i)
+            {
+                LVCOLUMNW column{};
+                column.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
+                column.pszText = const_cast<LPWSTR>(columns[i].title);
+                column.cx = columns[i].width;
+                column.iSubItem = i;
+                ListView_InsertColumn(hardwareList_, i, &column);
+            }
+        }
 
         servicesPlaceholder_ = CreateWindowExW(
             0,
@@ -1916,7 +2067,8 @@ namespace utm::ui
             !performancePlaceholder_ || !perfNavPanel_ || !perfNavAll_ || !perfNavCpu_ || !perfNavMemory_ || !perfNavDisk_ || !perfNavWifi_ || !perfNavEthernet_ || !perfNavGpu_ ||
             !perfCpuModeSingle_ || !perfCpuModePerCore_ ||
             !perfGraphCpu_ || !perfGraphMemory_ || !perfGraphGpu_ || !perfGraphUpload_ || !perfGraphDownload_ || !perfCoreGrid_ || !perfDetails_ ||
-            !networkPlaceholder_ || !hardwarePlaceholder_ || !servicesPlaceholder_ || !startupAppsPlaceholder_ || !usersPlaceholder_ ||
+            !networkPlaceholder_ || !hardwarePlaceholder_ || !hardwareHint_ || !hardwareSearchLabel_ || !hardwareSearchEdit_ || !hardwareList_ || !hardwareRefreshButton_ || !hardwareToggleButton_ || !hardwareStatus_ ||
+            !servicesPlaceholder_ || !startupAppsPlaceholder_ || !usersPlaceholder_ ||
             !quickToolsTitle_ || !quickToolsHint_ ||
             !quickPortLabel_ || !quickPortEdit_ || !quickKillPortButton_ || !quickPortKillOneButton_ ||
             !quickProcessLabel_ || !quickProcessEdit_ || !quickKillPatternButton_ || !quickProcessKillOneButton_ ||
@@ -1957,6 +2109,13 @@ namespace utm::ui
         applyFont(perfDetails_, uiFont_);
         applyFont(networkPlaceholder_, uiFont_);
         applyFont(hardwarePlaceholder_, uiFont_);
+        applyFont(hardwareHint_, uiFont_);
+        applyFont(hardwareSearchLabel_, uiBoldFont_);
+        applyFont(hardwareSearchEdit_, uiFont_);
+        applyFont(hardwareList_, uiFont_);
+        applyFont(hardwareRefreshButton_, uiBoldFont_);
+        applyFont(hardwareToggleButton_, uiBoldFont_);
+        applyFont(hardwareStatus_, uiFont_);
         applyFont(servicesPlaceholder_, uiFont_);
         applyFont(startupAppsPlaceholder_, uiFont_);
         applyFont(usersPlaceholder_, uiFont_);
@@ -1980,6 +2139,7 @@ namespace utm::ui
         RebuildPerformanceSubviewNavigation();
         sidebarNavigationComponent_.UpdateSelection();
         UpdatePerformanceSubviewSelection();
+        RefreshHardwareInventory(false);
         ApplySectionVisibility();
         return true;
     }
@@ -2034,7 +2194,22 @@ namespace utm::ui
 
         MoveWindow(performancePlaceholder_, contentX, bodyTop, contentWidth, bodyHeight, TRUE);
         MoveWindow(networkPlaceholder_, contentX, bodyTop, contentWidth, bodyHeight, TRUE);
-        MoveWindow(hardwarePlaceholder_, contentX, bodyTop, contentWidth, bodyHeight, TRUE);
+        const int hardwareButtonWidth = (std::max)(120, (std::min)(180, (contentWidth - 12) / 3));
+        const int hardwareHeaderWidth = (std::max)(120, contentWidth - (hardwareButtonWidth * 2) - 16);
+        MoveWindow(hardwarePlaceholder_, contentX, bodyTop, hardwareHeaderWidth, 24, TRUE);
+        MoveWindow(hardwareHint_, contentX, bodyTop + 24, contentWidth, 24, TRUE);
+        MoveWindow(hardwareRefreshButton_, contentX + contentWidth - (hardwareButtonWidth * 2) - 8, bodyTop, hardwareButtonWidth, 30, TRUE);
+        MoveWindow(hardwareToggleButton_, contentX + contentWidth - hardwareButtonWidth, bodyTop, hardwareButtonWidth, 30, TRUE);
+
+        const int hardwareSearchTop = bodyTop + 50;
+        MoveWindow(hardwareSearchLabel_, contentX, hardwareSearchTop + 3, 56, 22, TRUE);
+        MoveWindow(hardwareSearchEdit_, contentX + 58, hardwareSearchTop, (std::max)(120, contentWidth - 58), 28, TRUE);
+
+        const int hardwareListTop = hardwareSearchTop + 34;
+        const int hardwareStatusHeight = 24;
+        const int hardwareListHeight = (std::max)(80, bodyHeight - (hardwareListTop - bodyTop) - hardwareStatusHeight - 6);
+        MoveWindow(hardwareList_, contentX, hardwareListTop, contentWidth, hardwareListHeight, TRUE);
+        MoveWindow(hardwareStatus_, contentX, hardwareListTop + hardwareListHeight + 4, contentWidth, hardwareStatusHeight, TRUE);
         MoveWindow(servicesPlaceholder_, contentX, bodyTop, contentWidth, bodyHeight, TRUE);
         MoveWindow(startupAppsPlaceholder_, contentX, bodyTop, contentWidth, bodyHeight, TRUE);
         MoveWindow(usersPlaceholder_, contentX, bodyTop, contentWidth, bodyHeight, TRUE);
@@ -2232,6 +2407,13 @@ namespace utm::ui
 
         ShowWindow(networkPlaceholder_, networkTab ? SW_SHOW : SW_HIDE);
         ShowWindow(hardwarePlaceholder_, hardwareTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(hardwareHint_, hardwareTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(hardwareSearchLabel_, hardwareTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(hardwareSearchEdit_, hardwareTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(hardwareList_, hardwareTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(hardwareRefreshButton_, hardwareTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(hardwareToggleButton_, hardwareTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(hardwareStatus_, hardwareTab ? SW_SHOW : SW_HIDE);
         ShowWindow(servicesPlaceholder_, servicesTab ? SW_SHOW : SW_HIDE);
         ShowWindow(startupAppsPlaceholder_, startupTab ? SW_SHOW : SW_HIDE);
         ShowWindow(usersPlaceholder_, usersTab ? SW_SHOW : SW_HIDE);
@@ -2251,6 +2433,11 @@ namespace utm::ui
         ShowWindow(quickBrowseFileButton_, quickToolsTab ? SW_SHOW : SW_HIDE);
         ShowWindow(quickBrowseFolderButton_, quickToolsTab ? SW_SHOW : SW_HIDE);
         ShowWindow(quickKillSmartDeleteButton_, quickToolsTab ? SW_SHOW : SW_HIDE);
+
+        if (hardwareTab)
+        {
+            RefreshHardwareActionState();
+        }
     }
 
     void MainWindow::SetActiveSection(Section section)
@@ -2273,6 +2460,10 @@ namespace utm::ui
         {
             RebuildPerformanceSubviewNavigation();
             RefreshPerformancePanel();
+        }
+        else if (activeSection_ == Section::Hardware)
+        {
+            RefreshHardwareInventory(true);
         }
     }
 
@@ -2563,7 +2754,7 @@ namespace utm::ui
                  << L"Available: " << FormatNumber(memoryAvailableGb_, 1) << L" GB\r\n"
                  << L"Committed: " << FormatNumber(memoryCommittedGb_, 1) << L" / " << FormatNumber(memoryCommitLimitGb_, 1) << L" GB\r\n"
                  << L"Utilization: " << static_cast<int>(memoryPercent_ + 0.5) << L"%\r\n"
-                 << L"Design note: top chart shows In Use memory, bottom chart shows Available memory.\r\n"
+                 << L"Design note: charts show usage and available headroom percentages.\r\n"
                  << L"Speed: N/A | Slots used: N/A | Form factor: N/A | Hardware reserved: N/A";
             break;
         }
@@ -3084,6 +3275,8 @@ namespace utm::ui
 
         PushHistory(cpuHistory_, totalCpuPercent_);
         PushHistory(memoryHistory_, memoryUsedGb_);
+        PushHistory(memoryUtilizationHistory_, memoryPercent_);
+        PushHistory(memoryHeadroomHistory_, (std::clamp)(100.0 - memoryPercent_, 0.0, 100.0));
         PushHistory(memoryAvailableHistory_, memoryAvailableGb_);
         PushHistory(memoryCommittedHistory_, memoryCommittedGb_);
         PushHistory(gpuHistory_, gpuPercent_);
@@ -3147,7 +3340,7 @@ namespace utm::ui
                         : L"CPU | Per-core mode (scroll to view all cores)";
             break;
         case PerformanceView::Memory:
-            title = L"Memory | In-use and available trend";
+            title = L"Memory | Utilization and headroom trend";
             break;
         case PerformanceView::Disk:
             title = L"Disk | Read/Write throughput and latency";
@@ -3301,25 +3494,25 @@ namespace utm::ui
             }
             else
             {
-                cfg.history = &memoryHistory_;
-                cfg.title = L"Memory In Use";
-                cfg.unit = L"GB";
+                cfg.history = &memoryUtilizationHistory_;
+                cfg.title = L"Memory Utilization";
+                cfg.unit = L"%";
                 cfg.lineColor = RGB(16, 166, 115);
-                cfg.latest = memoryUsedGb_;
-                cfg.maxValue = (std::max)(1.0, memoryAxisTopGb_);
-                cfg.wholeNumberTicks = true;
+                cfg.latest = memoryPercent_;
+                cfg.maxValue = 100.0;
+                cfg.showPercent = true;
             }
             break;
         case kIdPerfGraphGpu:
             if (activePerformanceView_ == PerformanceView::Memory)
             {
-                cfg.history = &memoryAvailableHistory_;
-                cfg.title = L"Memory Available";
-                cfg.unit = L"GB";
+                cfg.history = &memoryHeadroomHistory_;
+                cfg.title = L"Memory Headroom";
+                cfg.unit = L"%";
                 cfg.lineColor = RGB(44, 132, 220);
-                cfg.latest = memoryAvailableGb_;
-                cfg.maxValue = (std::max)(1.0, memoryAxisTopGb_);
-                cfg.wholeNumberTicks = true;
+                cfg.latest = (std::clamp)(100.0 - memoryPercent_, 0.0, 100.0);
+                cfg.maxValue = 100.0;
+                cfg.showPercent = true;
             }
             else if (activePerformanceView_ == PerformanceView::Gpu)
             {
@@ -3605,14 +3798,7 @@ namespace utm::ui
         DrawTextW(dc, cfg.title.c_str(), -1, &titleRect, DT_LEFT | DT_TOP | DT_SINGLELINE);
 
         std::wstring latestLabel;
-        if (draw->CtlID == kIdPerfGraphMemory && activePerformanceView_ == PerformanceView::Memory)
-        {
-            latestLabel = FormatAxisValue(cfg.latest, cfg.unit);
-            latestLabel += L" (";
-            latestLabel += std::to_wstring(static_cast<int>(memoryPercent_ + 0.5));
-            latestLabel += L"%)";
-        }
-        else if (cfg.showPercent)
+        if (cfg.showPercent)
         {
             latestLabel = std::to_wstring(static_cast<int>(cfg.latest + 0.5));
             latestLabel += L"%";
