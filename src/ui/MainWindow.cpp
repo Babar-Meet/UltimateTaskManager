@@ -53,7 +53,6 @@ namespace
     constexpr int kIdPerfPlaceholder = 1025;
     constexpr int kIdNetworkPlaceholder = 1026;
     constexpr int kIdHardwarePlaceholder = 1027;
-    constexpr int kIdUsersPlaceholder = 1030;
     constexpr int kIdQuickToolsTitle = 1031;
     constexpr int kIdQuickToolsHint = 1032;
     constexpr int kIdQuickPortLabel = 1033;
@@ -119,6 +118,21 @@ namespace
     constexpr int kIdStartupDisableButton = 1209;
     constexpr int kIdStartupOpenLocationButton = 1210;
     constexpr int kIdStartupStatus = 1211;
+    constexpr int kIdUsersTitle = 1220;
+    constexpr int kIdUsersHint = 1221;
+    constexpr int kIdUsersSearchLabel = 1222;
+    constexpr int kIdUsersSearchEdit = 1223;
+    constexpr int kIdUsersModeLabel = 1224;
+    constexpr int kIdUsersModeCombo = 1225;
+    constexpr int kIdUsersList = 1226;
+    constexpr int kIdUsersRefreshButton = 1227;
+    constexpr int kIdUsersLogoffButton = 1228;
+    constexpr int kIdUsersDisconnectButton = 1229;
+    constexpr int kIdUsersStatus = 1230;
+    constexpr int kIdUsersProcessTitle = 1231;
+    constexpr int kIdUsersProcessUserLabel = 1232;
+    constexpr int kIdUsersProcessUserCombo = 1233;
+    constexpr int kIdUsersProcessList = 1234;
 
     constexpr int kIdQuickToolPortKillAll = 41000;
     constexpr int kIdQuickToolProcessKillAll = 41001;
@@ -747,6 +761,7 @@ namespace utm::ui
         hardwarePanelComponent_.Attach(this);
         servicesPanelComponent_.Attach(this);
         startupAppsPanelComponent_.Attach(this);
+        usersPanelComponent_.Attach(this);
         quickToolsPanelComponent_.Attach(this);
         statusBarComponent_.Attach(this);
     }
@@ -962,6 +977,11 @@ namespace utm::ui
                 return notifyResult;
             }
 
+            if (usersPanelComponent_.HandleNotify(hdr, lParam, notifyResult))
+            {
+                return notifyResult;
+            }
+
             break;
         }
 
@@ -978,6 +998,7 @@ namespace utm::ui
                 hardwarePanelComponent_.HandleCommand(id, code) ||
                 servicesPanelComponent_.HandleCommand(id, code) ||
                 startupAppsPanelComponent_.HandleCommand(id, code) ||
+                usersPanelComponent_.HandleCommand(id, code) ||
                 quickToolsPanelComponent_.HandleCommand(id))
             {
                 return 0;
@@ -1012,7 +1033,7 @@ namespace utm::ui
                 return reinterpret_cast<LRESULT>(backgroundBrush_);
             }
 
-            if (control == networkTitle_ || control == hardwarePlaceholder_ || control == servicesTitle_ || control == startupAppsTitle_)
+            if (control == networkTitle_ || control == hardwarePlaceholder_ || control == servicesTitle_ || control == startupAppsTitle_ || control == usersTitle_ || control == usersProcessTitle_)
             {
                 SetBkColor(dc, kMainBackgroundColor);
                 SetTextColor(dc, RGB(40, 57, 82));
@@ -1051,7 +1072,11 @@ namespace utm::ui
                 control == startupAppsUserLabel_ ||
                 control == startupAppsModeLabel_ ||
                 control == startupAppsStatus_ ||
-                control == usersPlaceholder_)
+                control == usersHint_ ||
+                control == usersSearchLabel_ ||
+                control == usersModeLabel_ ||
+                control == usersProcessUserLabel_ ||
+                control == usersStatus_)
             {
                 SetBkColor(dc, kMainBackgroundColor);
                 SetTextColor(dc, RGB(76, 92, 118));
@@ -2510,19 +2535,299 @@ namespace utm::ui
             }
         }
 
-        usersPlaceholder_ = CreateWindowExW(
+        usersTitle_ = CreateWindowExW(
             0,
             L"STATIC",
-            L"Users view is wired into navigation.\r\n\r\nNext phase: per-user CPU, memory, and process usage summary.",
+            L"Users",
             WS_CHILD,
             0,
             0,
             0,
             0,
             hwnd_,
-            MenuId(kIdUsersPlaceholder),
+            MenuId(kIdUsersTitle),
             instance_,
             nullptr);
+
+        usersHint_ = CreateWindowExW(
+            0,
+            L"STATIC",
+            L"View signed-in sessions and resource usage. Select a session to log off or disconnect.",
+            WS_CHILD,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdUsersHint),
+            instance_,
+            nullptr);
+
+        usersSearchLabel_ = CreateWindowExW(
+            0,
+            L"STATIC",
+            L"Search",
+            WS_CHILD,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdUsersSearchLabel),
+            instance_,
+            nullptr);
+
+        usersSearchEdit_ = CreateWindowExW(
+            WS_EX_CLIENTEDGE,
+            L"EDIT",
+            nullptr,
+            WS_CHILD | ES_AUTOHSCROLL,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdUsersSearchEdit),
+            instance_,
+            nullptr);
+
+        usersModeLabel_ = CreateWindowExW(
+            0,
+            L"STATIC",
+            L"Mode",
+            WS_CHILD,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdUsersModeLabel),
+            instance_,
+            nullptr);
+
+        usersModeCombo_ = CreateWindowExW(
+            0,
+            L"COMBOBOX",
+            nullptr,
+            WS_CHILD | WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdUsersModeCombo),
+            instance_,
+            nullptr);
+
+        usersRefreshButton_ = CreateWindowExW(
+            0,
+            L"BUTTON",
+            L"Refresh",
+            WS_CHILD | BS_PUSHBUTTON,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdUsersRefreshButton),
+            instance_,
+            nullptr);
+
+        usersLogoffButton_ = CreateWindowExW(
+            0,
+            L"BUTTON",
+            L"Log Off Session",
+            WS_CHILD | BS_PUSHBUTTON,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdUsersLogoffButton),
+            instance_,
+            nullptr);
+
+        usersDisconnectButton_ = CreateWindowExW(
+            0,
+            L"BUTTON",
+            L"Disconnect Session",
+            WS_CHILD | BS_PUSHBUTTON,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdUsersDisconnectButton),
+            instance_,
+            nullptr);
+
+        usersProcessTitle_ = CreateWindowExW(
+            0,
+            L"STATIC",
+            L"Processes For Selected User",
+            WS_CHILD,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdUsersProcessTitle),
+            instance_,
+            nullptr);
+
+        usersProcessUserLabel_ = CreateWindowExW(
+            0,
+            L"STATIC",
+            L"User",
+            WS_CHILD,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdUsersProcessUserLabel),
+            instance_,
+            nullptr);
+
+        usersProcessUserCombo_ = CreateWindowExW(
+            0,
+            L"COMBOBOX",
+            nullptr,
+            WS_CHILD | WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdUsersProcessUserCombo),
+            instance_,
+            nullptr);
+
+        usersList_ = CreateWindowExW(
+            WS_EX_CLIENTEDGE,
+            WC_LISTVIEWW,
+            nullptr,
+            WS_CHILD | LVS_REPORT | LVS_SHOWSELALWAYS | LVS_SINGLESEL,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdUsersList),
+            instance_,
+            nullptr);
+
+        usersProcessList_ = CreateWindowExW(
+            WS_EX_CLIENTEDGE,
+            WC_LISTVIEWW,
+            nullptr,
+            WS_CHILD | LVS_REPORT | LVS_SHOWSELALWAYS | LVS_SINGLESEL,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdUsersProcessList),
+            instance_,
+            nullptr);
+
+        usersStatus_ = CreateWindowExW(
+            0,
+            L"STATIC",
+            L"Scanning user sessions...",
+            WS_CHILD,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdUsersStatus),
+            instance_,
+            nullptr);
+
+        if (usersModeCombo_)
+        {
+            SendMessageW(usersModeCombo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"All Sessions"));
+            SendMessageW(usersModeCombo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Active"));
+            SendMessageW(usersModeCombo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Disconnected"));
+            SendMessageW(usersModeCombo_, CB_SETCURSEL, 0, 0);
+        }
+
+        if (usersProcessUserCombo_)
+        {
+            SendMessageW(usersProcessUserCombo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"All Users"));
+            SendMessageW(usersProcessUserCombo_, CB_SETCURSEL, 0, 0);
+        }
+
+        if (usersList_)
+        {
+            SetWindowTheme(usersList_, L"Explorer", nullptr);
+            ListView_SetExtendedListViewStyle(
+                usersList_,
+                LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_GRIDLINES | LVS_EX_LABELTIP);
+
+            struct UsersColumn
+            {
+                const wchar_t *title;
+                int width;
+            };
+
+            const UsersColumn columns[] = {
+                {L"User", 210},
+                {L"Status", 120},
+                {L"CPU", 80},
+                {L"Memory", 130},
+                {L"Disk", 100},
+                {L"Network", 100},
+                {L"Processes", 90},
+                {L"Session ID", 90},
+                {L"Session Name", 140}};
+
+            for (int i = 0; i < static_cast<int>(std::size(columns)); ++i)
+            {
+                LVCOLUMNW column{};
+                column.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
+                column.pszText = const_cast<LPWSTR>(columns[i].title);
+                column.cx = columns[i].width;
+                column.iSubItem = i;
+                ListView_InsertColumn(usersList_, i, &column);
+            }
+        }
+
+        if (usersProcessList_)
+        {
+            SetWindowTheme(usersProcessList_, L"Explorer", nullptr);
+            ListView_SetExtendedListViewStyle(
+                usersProcessList_,
+                LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_GRIDLINES | LVS_EX_LABELTIP);
+
+            struct UserProcessColumn
+            {
+                const wchar_t *title;
+                int width;
+            };
+
+            const UserProcessColumn columns[] = {
+                {L"User", 170},
+                {L"Process", 230},
+                {L"PID", 80},
+                {L"CPU", 80},
+                {L"Memory", 130},
+                {L"Disk", 100},
+                {L"Read", 130},
+                {L"Write", 130},
+                {L"Session", 90}};
+
+            for (int i = 0; i < static_cast<int>(std::size(columns)); ++i)
+            {
+                LVCOLUMNW column{};
+                column.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
+                column.pszText = const_cast<LPWSTR>(columns[i].title);
+                column.cx = columns[i].width;
+                column.iSubItem = i;
+                ListView_InsertColumn(usersProcessList_, i, &column);
+            }
+        }
 
         quickToolsTitle_ = CreateWindowExW(
             0,
@@ -2759,7 +3064,7 @@ namespace utm::ui
             !servicesRefreshButton_ || !servicesStartButton_ || !servicesStopButton_ || !servicesRestartButton_ || !servicesOpenConsoleButton_ || !servicesList_ || !servicesStatus_ ||
             !startupAppsTitle_ || !startupAppsHint_ || !startupAppsSearchLabel_ || !startupAppsSearchEdit_ || !startupAppsUserLabel_ || !startupAppsUserCombo_ || !startupAppsModeLabel_ || !startupAppsModeCombo_ ||
             !startupAppsRefreshButton_ || !startupAppsEnableButton_ || !startupAppsDisableButton_ || !startupAppsOpenLocationButton_ || !startupAppsList_ || !startupAppsStatus_ ||
-            !usersPlaceholder_ ||
+            !usersTitle_ || !usersHint_ || !usersSearchLabel_ || !usersSearchEdit_ || !usersModeLabel_ || !usersModeCombo_ || !usersRefreshButton_ || !usersLogoffButton_ || !usersDisconnectButton_ || !usersProcessTitle_ || !usersProcessUserLabel_ || !usersProcessUserCombo_ || !usersList_ || !usersProcessList_ || !usersStatus_ ||
             !quickToolsTitle_ || !quickToolsHint_ ||
             !quickPortLabel_ || !quickPortEdit_ || !quickKillPortButton_ || !quickPortKillOneButton_ ||
             !quickProcessLabel_ || !quickProcessEdit_ || !quickKillPatternButton_ || !quickProcessKillOneButton_ ||
@@ -2845,7 +3150,21 @@ namespace utm::ui
         applyFont(startupAppsOpenLocationButton_, uiBoldFont_);
         applyFont(startupAppsList_, uiFont_);
         applyFont(startupAppsStatus_, uiFont_);
-        applyFont(usersPlaceholder_, uiFont_);
+        applyFont(usersTitle_, uiBoldFont_);
+        applyFont(usersHint_, uiFont_);
+        applyFont(usersSearchLabel_, uiBoldFont_);
+        applyFont(usersSearchEdit_, uiFont_);
+        applyFont(usersModeLabel_, uiBoldFont_);
+        applyFont(usersModeCombo_, uiFont_);
+        applyFont(usersRefreshButton_, uiBoldFont_);
+        applyFont(usersLogoffButton_, uiBoldFont_);
+        applyFont(usersDisconnectButton_, uiBoldFont_);
+        applyFont(usersProcessTitle_, uiBoldFont_);
+        applyFont(usersProcessUserLabel_, uiBoldFont_);
+        applyFont(usersProcessUserCombo_, uiFont_);
+        applyFont(usersList_, uiFont_);
+        applyFont(usersProcessList_, uiFont_);
+        applyFont(usersStatus_, uiFont_);
         applyFont(quickToolsTitle_, uiTitleFont_);
         applyFont(quickToolsHint_, uiFont_);
         applyFont(quickPortLabel_, uiBoldFont_);
@@ -2871,6 +3190,7 @@ namespace utm::ui
         RefreshHardwareInventory(false);
         RefreshServicesInventory(false);
         RefreshStartupAppsInventory(false);
+        RefreshUsersInventory(false);
         ApplySectionVisibility();
         return true;
     }
@@ -3062,7 +3382,57 @@ namespace utm::ui
         MoveWindow(startupAppsList_, contentX, startupListTop, contentWidth, startupListHeight, TRUE);
         MoveWindow(startupAppsStatus_, contentX, startupListTop + startupListHeight + 4, contentWidth, startupStatusHeight, TRUE);
 
-        MoveWindow(usersPlaceholder_, contentX, bodyTop, contentWidth, bodyHeight, TRUE);
+        const int usersRefreshWidth = (std::max)(110, (std::min)(170, contentWidth / 5));
+        const int usersHeaderWidth = (std::max)(140, contentWidth - usersRefreshWidth - 8);
+        MoveWindow(usersTitle_, contentX, bodyTop, usersHeaderWidth, 24, TRUE);
+        MoveWindow(usersRefreshButton_, contentX + contentWidth - usersRefreshWidth, bodyTop, usersRefreshWidth, 30, TRUE);
+        MoveWindow(usersHint_, contentX, bodyTop + 24, contentWidth, 24, TRUE);
+
+        const int usersSearchTop = bodyTop + 50;
+        const int usersModeWidth = (std::max)(130, (std::min)(180, contentWidth / 5));
+        const int usersTargetWidth = (std::max)(180, (std::min)(260, contentWidth / 4));
+        const int usersModeLabelWidth = 42;
+        const int usersTargetLabelWidth = 36;
+        const int usersModeX = contentX + contentWidth - usersModeWidth;
+        const int usersModeLabelX = usersModeX - usersModeLabelWidth - 6;
+        const int usersTargetX = usersModeLabelX - usersTargetWidth - 8;
+        const int usersTargetLabelX = usersTargetX - usersTargetLabelWidth - 6;
+        MoveWindow(usersSearchLabel_, contentX, usersSearchTop + 3, 56, 22, TRUE);
+        MoveWindow(usersProcessUserLabel_, usersTargetLabelX, usersSearchTop + 3, usersTargetLabelWidth, 22, TRUE);
+        MoveWindow(usersProcessUserCombo_, usersTargetX, usersSearchTop, usersTargetWidth, 220, TRUE);
+        MoveWindow(usersModeLabel_, usersModeLabelX, usersSearchTop + 3, usersModeLabelWidth, 22, TRUE);
+        MoveWindow(usersModeCombo_, usersModeX, usersSearchTop, usersModeWidth, 220, TRUE);
+
+        const int usersSearchLeft = contentX + 58;
+        const int usersSearchRight = usersTargetLabelX - 8;
+        MoveWindow(usersSearchEdit_, usersSearchLeft, usersSearchTop, (std::max)(120, usersSearchRight - usersSearchLeft), 28, TRUE);
+
+        const int usersActionTop = usersSearchTop + 34;
+        const int usersActionWidth = (contentWidth - 8) / 2;
+        MoveWindow(usersLogoffButton_, contentX, usersActionTop, usersActionWidth, 30, TRUE);
+        MoveWindow(usersDisconnectButton_, contentX + usersActionWidth + 8, usersActionTop, contentWidth - usersActionWidth - 8, 30, TRUE);
+
+        const int usersListTop = usersActionTop + 36;
+        const int usersStatusHeight = 24;
+        const int usersAvailableHeight = (std::max)(120, bodyHeight - (usersListTop - bodyTop) - usersStatusHeight - 6);
+        const int usersPaneGap = 8;
+        const int usersProcessHeaderHeight = 22;
+        const int usersListAreaHeight = (std::max)(120, usersAvailableHeight - usersPaneGap - usersProcessHeaderHeight);
+
+        int usersSessionHeight = (std::max)(80, usersListAreaHeight * 45 / 100);
+        if (usersSessionHeight > usersListAreaHeight - 80)
+        {
+            usersSessionHeight = usersListAreaHeight - 80;
+        }
+
+        const int usersProcessHeight = (std::max)(80, usersListAreaHeight - usersSessionHeight);
+
+        MoveWindow(usersList_, contentX, usersListTop, contentWidth, usersSessionHeight, TRUE);
+
+        const int usersProcessTop = usersListTop + usersSessionHeight + usersPaneGap + usersProcessHeaderHeight;
+        MoveWindow(usersProcessTitle_, contentX, usersListTop + usersSessionHeight + usersPaneGap, contentWidth, usersProcessHeaderHeight, TRUE);
+        MoveWindow(usersProcessList_, contentX, usersProcessTop, contentWidth, usersProcessHeight, TRUE);
+        MoveWindow(usersStatus_, contentX, usersProcessTop + usersProcessHeight + 4, contentWidth, usersStatusHeight, TRUE);
 
         const int perfGap = 8;
         const int perfSidebarWidth = (std::min)(210, (std::max)(150, contentWidth / 4));
@@ -3301,7 +3671,21 @@ namespace utm::ui
         ShowWindow(startupAppsOpenLocationButton_, startupTab ? SW_SHOW : SW_HIDE);
         ShowWindow(startupAppsList_, startupTab ? SW_SHOW : SW_HIDE);
         ShowWindow(startupAppsStatus_, startupTab ? SW_SHOW : SW_HIDE);
-        ShowWindow(usersPlaceholder_, usersTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(usersTitle_, usersTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(usersHint_, usersTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(usersSearchLabel_, usersTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(usersSearchEdit_, usersTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(usersModeLabel_, usersTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(usersModeCombo_, usersTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(usersRefreshButton_, usersTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(usersLogoffButton_, usersTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(usersDisconnectButton_, usersTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(usersProcessTitle_, usersTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(usersProcessUserLabel_, usersTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(usersProcessUserCombo_, usersTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(usersList_, usersTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(usersProcessList_, usersTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(usersStatus_, usersTab ? SW_SHOW : SW_HIDE);
 
         ShowWindow(quickToolsTitle_, quickToolsTab ? SW_SHOW : SW_HIDE);
         ShowWindow(quickToolsHint_, quickToolsTab ? SW_SHOW : SW_HIDE);
@@ -3337,6 +3721,11 @@ namespace utm::ui
         if (startupTab)
         {
             RefreshStartupAppsActionState();
+        }
+
+        if (usersTab)
+        {
+            RefreshUsersActionState();
         }
     }
 
@@ -3376,6 +3765,10 @@ namespace utm::ui
         else if (activeSection_ == Section::StartupApps)
         {
             RefreshStartupAppsInventory(true);
+        }
+        else if (activeSection_ == Section::Users)
+        {
+            RefreshUsersInventory(true);
         }
     }
 

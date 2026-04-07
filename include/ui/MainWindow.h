@@ -4,6 +4,7 @@
 #include "core/model/ProcessSnapshot.h"
 #include "system/services/ServiceManager.h"
 #include "system/startup/StartupAppsManager.h"
+#include "system/users/UserSessionManager.h"
 #include "ui/HardwarePanel.h"
 #include "ui/NetworkPanel.h"
 #include "ui/PerformancePanel.h"
@@ -14,6 +15,7 @@
 #include "ui/SidebarRetractable.h"
 #include "ui/StartupAppsPanel.h"
 #include "ui/StatusBar.h"
+#include "ui/UsersPanel.h"
 
 #include <windows.h>
 #include <pdh.h>
@@ -21,6 +23,8 @@
 
 #include <deque>
 #include <string>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace utm::ui
@@ -49,6 +53,7 @@ namespace utm::ui
         friend class HardwarePanel;
         friend class ServicesPanel;
         friend class StartupAppsPanel;
+        friend class UsersPanel;
         friend class QuickToolsPanel;
         friend class StatusBar;
 
@@ -119,6 +124,13 @@ namespace utm::ui
             Disabled
         };
 
+        enum class UsersFilterMode
+        {
+            All,
+            Active,
+            Disconnected
+        };
+
         struct NetworkInterfacePerf;
         struct GpuPerf;
         struct PerformanceSubviewBinding;
@@ -167,6 +179,15 @@ namespace utm::ui
         void ApplyStartupAppsFilterToList(bool preserveSelection);
         void RefreshStartupAppsActionState();
         int SelectedStartupAppIndex() const;
+        bool HandleUsersCommand(UINT id, UINT code);
+        bool HandleUsersNotify(const NMHDR *hdr, LPARAM lParam, LRESULT &result);
+        void RefreshUsersInventory(bool preserveSelection);
+        void ApplyUsersFilterToList(bool preserveSelection);
+        void RefreshUsersProcessTargets();
+        void ApplyUsersProcessFilterToList(bool preserveSelection);
+        void RefreshUsersActionState();
+        int SelectedUserIndex() const;
+        int SelectedUsersProcessIndex() const;
         const NetworkInterfacePerf *GetActiveNetworkInterface() const;
         const GpuPerf *GetActiveGpu() const;
         void NormalizeDynamicPerformanceSelection();
@@ -291,6 +312,7 @@ namespace utm::ui
         HardwarePanel hardwarePanelComponent_{};
         ServicesPanel servicesPanelComponent_{};
         StartupAppsPanel startupAppsPanelComponent_{};
+        UsersPanel usersPanelComponent_{};
         QuickToolsPanel quickToolsPanelComponent_{};
         StatusBar statusBarComponent_{};
 
@@ -375,7 +397,21 @@ namespace utm::ui
         HWND startupAppsOpenLocationButton_ = nullptr;
         HWND startupAppsList_ = nullptr;
         HWND startupAppsStatus_ = nullptr;
-        HWND usersPlaceholder_ = nullptr;
+        HWND usersTitle_ = nullptr;
+        HWND usersHint_ = nullptr;
+        HWND usersSearchLabel_ = nullptr;
+        HWND usersSearchEdit_ = nullptr;
+        HWND usersModeLabel_ = nullptr;
+        HWND usersModeCombo_ = nullptr;
+        HWND usersRefreshButton_ = nullptr;
+        HWND usersLogoffButton_ = nullptr;
+        HWND usersDisconnectButton_ = nullptr;
+        HWND usersProcessTitle_ = nullptr;
+        HWND usersProcessUserLabel_ = nullptr;
+        HWND usersProcessUserCombo_ = nullptr;
+        HWND usersList_ = nullptr;
+        HWND usersProcessList_ = nullptr;
+        HWND usersStatus_ = nullptr;
         HWND quickToolsTitle_ = nullptr;
         HWND quickToolsHint_ = nullptr;
         HWND quickPortLabel_ = nullptr;
@@ -412,11 +448,15 @@ namespace utm::ui
         std::wstring hardwareFilterText_;
         std::wstring servicesFilterText_;
         std::wstring startupAppsFilterText_;
+        std::wstring usersFilterText_;
+        std::wstring activeUsersProcessTarget_ = L"*";
         std::wstring activeStartupAppsTargetId_ = L"current-user";
         std::vector<size_t> networkVisibleRows_;
         std::vector<size_t> hardwareVisibleRows_;
         std::vector<size_t> servicesVisibleRows_;
         std::vector<size_t> startupAppsVisibleRows_;
+        std::vector<size_t> usersVisibleRows_;
+        std::vector<size_t> usersProcessVisibleRows_;
 
         std::vector<double> performanceCoreUsage_;
         std::vector<std::deque<double>> performanceCoreHistory_;
@@ -433,7 +473,12 @@ namespace utm::ui
         std::vector<system::services::ServiceInfo> services_;
         std::vector<system::startup::StartupAppEntry> startupApps_;
         std::vector<system::startup::StartupUserTarget> startupAppsUserTargets_;
+        std::vector<system::users::UserSessionInfo> usersSessions_;
+        std::vector<system::users::UserProcessInfo> usersProcesses_;
         std::vector<PerformanceSubviewBinding> perfDynamicNavBindings_;
+        std::unordered_map<DWORD, std::pair<std::uint64_t, std::uint64_t>> usersPreviousIoTotals_;
+        std::vector<std::pair<std::wstring, std::wstring>> usersProcessTargets_;
+        std::unordered_map<std::uint32_t, std::pair<std::uint64_t, std::uint64_t>> usersProcessPreviousIoTotals_;
         size_t perfStaticDynamicButtonCount_ = 0;
         std::wstring perfDynamicNavSignature_;
         size_t activeNetworkInterfaceIndex_ = 0;
@@ -442,6 +487,9 @@ namespace utm::ui
         std::uint64_t lastHardwareRefreshTickMs_ = 0;
         std::uint64_t lastServicesRefreshTickMs_ = 0;
         std::uint64_t lastStartupAppsRefreshTickMs_ = 0;
+        std::uint64_t lastUsersRefreshTickMs_ = 0;
+        std::uint64_t usersIoSampleTickMs_ = 0;
+        std::uint64_t usersProcessIoSampleTickMs_ = 0;
 
         double totalCpuPercent_ = 0.0;
         double memoryPercent_ = 0.0;
@@ -532,6 +580,7 @@ namespace utm::ui
         NetworkFilterMode activeNetworkFilterMode_ = NetworkFilterMode::All;
         ServiceFilterMode activeServiceFilterMode_ = ServiceFilterMode::All;
         StartupAppsFilterMode activeStartupAppsFilterMode_ = StartupAppsFilterMode::All;
+        UsersFilterMode activeUsersFilterMode_ = UsersFilterMode::All;
         int perfAllScrollOffset_ = 0;
         int perfAllContentHeight_ = 0;
         int perfCpuCoreScrollOffset_ = 0;

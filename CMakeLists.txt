@@ -19,6 +19,7 @@ set(SOURCES
     src/system/startup/StartupAppsManager.cpp
     src/system/startup/StartupApprovalStore.cpp
     src/system/startup/StartupProfileDiscovery.cpp
+    src/system/users/UserSessionManager.cpp
     src/tools/process/ProcessActions.cpp
     src/ui/MainWindow.cpp
     src/ui/SidebarNavigation.cpp
@@ -29,6 +30,8 @@ set(SOURCES
     src/ui/HardwarePanel.cpp
     src/ui/ServicesPanel.cpp
     src/ui/StartupAppsPanel.cpp
+    src/ui/UsersPanel.cpp
+    src/ui/UsersProcessPanel.cpp
     src/ui/QuickToolsPanel.cpp
     src/ui/StatusBar.cpp
     src/util/logging/Logger.cpp
@@ -56,6 +59,7 @@ target_link_libraries(UltimateTaskManager PRIVATE
     shell32
     shlwapi
     user32
+    wtsapi32
     ws2_32
 )
 
