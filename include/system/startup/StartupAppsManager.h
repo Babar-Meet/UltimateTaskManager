@@ -11,7 +11,8 @@ namespace utm::system::startup
     enum class StartupScope
     {
         CurrentUser,
-        AllUsers
+        AllUsers,
+        SpecificUser
     };
 
     enum class StartupSource
@@ -28,6 +29,8 @@ namespace utm::system::startup
         std::wstring command;
         std::wstring startupType;
         std::wstring scopeText;
+        std::wstring ownerUser;
+        std::wstring ownerSid;
         std::wstring sourceLocation;
         std::wstring statusText;
 
@@ -41,10 +44,17 @@ namespace utm::system::startup
         std::wstring approvalValueName;
     };
 
+    struct StartupUserTarget
+    {
+        std::wstring id;
+        std::wstring displayName;
+    };
+
     class StartupAppsManager
     {
     public:
-        static bool EnumerateStartupApps(std::vector<StartupAppEntry> &entries, std::wstring &errorText);
+        static bool EnumerateStartupUserTargets(std::vector<StartupUserTarget> &targets, std::wstring &errorText);
+        static bool EnumerateStartupApps(std::vector<StartupAppEntry> &entries, std::wstring &errorText, const std::wstring &targetId = L"current-user");
         static bool SetStartupEnabled(const StartupAppEntry &entry, bool enable, std::wstring &errorText);
     };
 

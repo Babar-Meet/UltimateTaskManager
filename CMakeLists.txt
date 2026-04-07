@@ -18,6 +18,7 @@ set(SOURCES
     src/system/services/ServiceManager.cpp
     src/system/startup/StartupAppsManager.cpp
     src/system/startup/StartupApprovalStore.cpp
+    src/system/startup/StartupProfileDiscovery.cpp
     src/tools/process/ProcessActions.cpp
     src/ui/MainWindow.cpp
     src/ui/SidebarNavigation.cpp

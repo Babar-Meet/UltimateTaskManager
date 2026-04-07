@@ -17,6 +17,8 @@ namespace
     constexpr UINT kIdStartupHint = 1201;
     constexpr UINT kIdStartupSearchLabel = 1202;
     constexpr UINT kIdStartupSearchEdit = 1203;
+    constexpr UINT kIdStartupUserLabel = 1212;
+    constexpr UINT kIdStartupUserCombo = 1213;
     constexpr UINT kIdStartupModeLabel = 1204;
     constexpr UINT kIdStartupModeCombo = 1205;
     constexpr UINT kIdStartupList = 1206;
@@ -24,6 +26,8 @@ namespace
     constexpr UINT kIdStartupEnableButton = 1208;
     constexpr UINT kIdStartupDisableButton = 1209;
     constexpr UINT kIdStartupOpenLocationButton = 1210;
+
+    constexpr const wchar_t *kDefaultStartupTargetId = L"current-user";
 
     std::wstring ToLowerStartup(const std::wstring &value)
     {
@@ -41,6 +45,21 @@ namespace
         }
 
         return ToLowerStartup(text).find(loweredQuery) != std::wstring::npos;
+    }
+
+    std::wstring ActiveStartupTargetLabel(
+        const std::vector<utm::system::startup::StartupUserTarget> &targets,
+        const std::wstring &targetId)
+    {
+        for (const auto &target : targets)
+        {
+            if (target.id == targetId)
+            {
+                return target.displayName;
+            }
+        }
+
+        return L"Current User";
     }
 
 } // namespace
@@ -95,6 +114,50 @@ namespace utm::ui
         return static_cast<int>(index);
     }
 
+    void MainWindow::RefreshStartupAppsUserTargets()
+    {
+        if (!startupAppsUserCombo_)
+        {
+            return;
+        }
+
+        std::wstring targetId = activeStartupAppsTargetId_.empty() ? kDefaultStartupTargetId : activeStartupAppsTargetId_;
+
+        std::vector<system::startup::StartupUserTarget> targets;
+        std::wstring discoveryError;
+        system::startup::StartupAppsManager::EnumerateStartupUserTargets(targets, discoveryError);
+
+        if (targets.empty())
+        {
+            targets.push_back({kDefaultStartupTargetId, L"Current User"});
+        }
+
+        startupAppsUserTargets_ = std::move(targets);
+
+        SendMessageW(startupAppsUserCombo_, CB_RESETCONTENT, 0, 0);
+
+        int selectedIndex = 0;
+        for (size_t i = 0; i < startupAppsUserTargets_.size(); ++i)
+        {
+            const auto &entry = startupAppsUserTargets_[i];
+            SendMessageW(startupAppsUserCombo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(entry.displayName.c_str()));
+            if (entry.id == targetId)
+            {
+                selectedIndex = static_cast<int>(i);
+            }
+        }
+
+        SendMessageW(startupAppsUserCombo_, CB_SETCURSEL, selectedIndex, 0);
+        if (selectedIndex >= 0 && static_cast<size_t>(selectedIndex) < startupAppsUserTargets_.size())
+        {
+            activeStartupAppsTargetId_ = startupAppsUserTargets_[static_cast<size_t>(selectedIndex)].id;
+        }
+        else
+        {
+            activeStartupAppsTargetId_ = kDefaultStartupTargetId;
+        }
+    }
+
     bool MainWindow::HandleStartupAppsNotify(const NMHDR *hdr, LPARAM lParam, LRESULT &result)
     {
         if (!hdr || hdr->hwndFrom != startupAppsList_)
@@ -147,8 +210,25 @@ namespace utm::ui
             return true;
         }
 
+        if (id == kIdStartupUserCombo && code == CBN_SELCHANGE)
+        {
+            const int selected = static_cast<int>(SendMessageW(startupAppsUserCombo_, CB_GETCURSEL, 0, 0));
+            if (selected >= 0 && static_cast<size_t>(selected) < startupAppsUserTargets_.size())
+            {
+                activeStartupAppsTargetId_ = startupAppsUserTargets_[static_cast<size_t>(selected)].id;
+            }
+            else
+            {
+                activeStartupAppsTargetId_ = kDefaultStartupTargetId;
+            }
+
+            RefreshStartupAppsInventory(false);
+            return true;
+        }
+
         if (id == kIdStartupRefreshButton)
         {
+            RefreshStartupAppsUserTargets();
             RefreshStartupAppsInventory(true);
             return true;
         }
@@ -224,6 +304,8 @@ namespace utm::ui
             return;
         }
 
+        RefreshStartupAppsUserTargets();
+
         std::wstring selectedId;
         if (preserveSelection)
         {
@@ -236,7 +318,7 @@ namespace utm::ui
 
         std::vector<system::startup::StartupAppEntry> updated;
         std::wstring error;
-        if (!system::startup::StartupAppsManager::EnumerateStartupApps(updated, error))
+        if (!system::startup::StartupAppsManager::EnumerateStartupApps(updated, error, activeStartupAppsTargetId_))
         {
             if (startupAppsStatus_)
             {
@@ -338,6 +420,7 @@ namespace utm::ui
             const bool passQuery = ContainsInsensitiveStartup(entry.name, loweredQuery) ||
                                    ContainsInsensitiveStartup(entry.command, loweredQuery) ||
                                    ContainsInsensitiveStartup(entry.scopeText, loweredQuery) ||
+                                   ContainsInsensitiveStartup(entry.ownerUser, loweredQuery) ||
                                    ContainsInsensitiveStartup(entry.startupType, loweredQuery) ||
                                    ContainsInsensitiveStartup(entry.sourceLocation, loweredQuery) ||
                                    ContainsInsensitiveStartup(entry.statusText, loweredQuery);
@@ -407,8 +490,10 @@ namespace utm::ui
 
             if (startupAppsStatus_)
             {
+                const std::wstring targetLabel = ActiveStartupTargetLabel(startupAppsUserTargets_, activeStartupAppsTargetId_);
                 std::wstringstream summary;
-                summary << L"Showing " << startupAppsVisibleRows_.size() << L" of " << startupApps_.size() << L" startup entries.";
+                summary << L"Target: " << targetLabel
+                        << L" | Showing " << startupAppsVisibleRows_.size() << L" of " << startupApps_.size() << L" startup entries.";
                 if (!startupAppsFilterText_.empty())
                 {
                     summary << L" Filter: " << startupAppsFilterText_;
@@ -425,11 +510,13 @@ namespace utm::ui
 
         if (startupAppsStatus_)
         {
+             const std::wstring targetLabel = ActiveStartupTargetLabel(startupAppsUserTargets_, activeStartupAppsTargetId_);
             std::wstringstream detail;
             detail << L"Selected: " << entry.name
                    << L" | " << entry.statusText
                    << L" | " << entry.startupType
                    << L" | " << entry.scopeText
+                 << L" | Target: " << targetLabel
                    << L" | Visible " << startupAppsVisibleRows_.size() << L"/" << startupApps_.size();
 
             if (!entry.canToggle)

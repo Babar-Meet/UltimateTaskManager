@@ -163,6 +163,7 @@ namespace utm::ui
         bool HandleStartupAppsCommand(UINT id, UINT code);
         bool HandleStartupAppsNotify(const NMHDR *hdr, LPARAM lParam, LRESULT &result);
         void RefreshStartupAppsInventory(bool preserveSelection);
+        void RefreshStartupAppsUserTargets();
         void ApplyStartupAppsFilterToList(bool preserveSelection);
         void RefreshStartupAppsActionState();
         int SelectedStartupAppIndex() const;
@@ -364,6 +365,8 @@ namespace utm::ui
         HWND startupAppsHint_ = nullptr;
         HWND startupAppsSearchLabel_ = nullptr;
         HWND startupAppsSearchEdit_ = nullptr;
+        HWND startupAppsUserLabel_ = nullptr;
+        HWND startupAppsUserCombo_ = nullptr;
         HWND startupAppsModeLabel_ = nullptr;
         HWND startupAppsModeCombo_ = nullptr;
         HWND startupAppsRefreshButton_ = nullptr;
@@ -409,6 +412,7 @@ namespace utm::ui
         std::wstring hardwareFilterText_;
         std::wstring servicesFilterText_;
         std::wstring startupAppsFilterText_;
+        std::wstring activeStartupAppsTargetId_ = L"current-user";
         std::vector<size_t> networkVisibleRows_;
         std::vector<size_t> hardwareVisibleRows_;
         std::vector<size_t> servicesVisibleRows_;
@@ -428,6 +432,7 @@ namespace utm::ui
         std::vector<HardwareDeviceEntry> hardwareDevices_;
         std::vector<system::services::ServiceInfo> services_;
         std::vector<system::startup::StartupAppEntry> startupApps_;
+        std::vector<system::startup::StartupUserTarget> startupAppsUserTargets_;
         std::vector<PerformanceSubviewBinding> perfDynamicNavBindings_;
         size_t perfStaticDynamicButtonCount_ = 0;
         std::wstring perfDynamicNavSignature_;

@@ -109,6 +109,8 @@ namespace
     constexpr int kIdStartupHint = 1201;
     constexpr int kIdStartupSearchLabel = 1202;
     constexpr int kIdStartupSearchEdit = 1203;
+    constexpr int kIdStartupUserLabel = 1212;
+    constexpr int kIdStartupUserCombo = 1213;
     constexpr int kIdStartupModeLabel = 1204;
     constexpr int kIdStartupModeCombo = 1205;
     constexpr int kIdStartupList = 1206;
@@ -1046,6 +1048,7 @@ namespace utm::ui
                 control == servicesStatus_ ||
                 control == startupAppsHint_ ||
                 control == startupAppsSearchLabel_ ||
+                control == startupAppsUserLabel_ ||
                 control == startupAppsModeLabel_ ||
                 control == startupAppsStatus_ ||
                 control == usersPlaceholder_)
@@ -2325,6 +2328,34 @@ namespace utm::ui
             instance_,
             nullptr);
 
+        startupAppsUserLabel_ = CreateWindowExW(
+            0,
+            L"STATIC",
+            L"User",
+            WS_CHILD,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdStartupUserLabel),
+            instance_,
+            nullptr);
+
+        startupAppsUserCombo_ = CreateWindowExW(
+            0,
+            L"COMBOBOX",
+            nullptr,
+            WS_CHILD | WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL,
+            0,
+            0,
+            0,
+            0,
+            hwnd_,
+            MenuId(kIdStartupUserCombo),
+            instance_,
+            nullptr);
+
         startupAppsModeLabel_ = CreateWindowExW(
             0,
             L"STATIC",
@@ -2444,6 +2475,8 @@ namespace utm::ui
             SendMessageW(startupAppsModeCombo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Disabled"));
             SendMessageW(startupAppsModeCombo_, CB_SETCURSEL, 0, 0);
         }
+
+        RefreshStartupAppsUserTargets();
 
         if (startupAppsList_)
         {
@@ -2724,7 +2757,7 @@ namespace utm::ui
             !hardwarePlaceholder_ || !hardwareHint_ || !hardwareSearchLabel_ || !hardwareSearchEdit_ || !hardwareList_ || !hardwareRefreshButton_ || !hardwareToggleButton_ || !hardwareStatus_ ||
             !servicesTitle_ || !servicesHint_ || !servicesSearchLabel_ || !servicesSearchEdit_ || !servicesModeLabel_ || !servicesModeCombo_ ||
             !servicesRefreshButton_ || !servicesStartButton_ || !servicesStopButton_ || !servicesRestartButton_ || !servicesOpenConsoleButton_ || !servicesList_ || !servicesStatus_ ||
-            !startupAppsTitle_ || !startupAppsHint_ || !startupAppsSearchLabel_ || !startupAppsSearchEdit_ || !startupAppsModeLabel_ || !startupAppsModeCombo_ ||
+            !startupAppsTitle_ || !startupAppsHint_ || !startupAppsSearchLabel_ || !startupAppsSearchEdit_ || !startupAppsUserLabel_ || !startupAppsUserCombo_ || !startupAppsModeLabel_ || !startupAppsModeCombo_ ||
             !startupAppsRefreshButton_ || !startupAppsEnableButton_ || !startupAppsDisableButton_ || !startupAppsOpenLocationButton_ || !startupAppsList_ || !startupAppsStatus_ ||
             !usersPlaceholder_ ||
             !quickToolsTitle_ || !quickToolsHint_ ||
@@ -2802,6 +2835,8 @@ namespace utm::ui
         applyFont(startupAppsHint_, uiFont_);
         applyFont(startupAppsSearchLabel_, uiBoldFont_);
         applyFont(startupAppsSearchEdit_, uiFont_);
+        applyFont(startupAppsUserLabel_, uiBoldFont_);
+        applyFont(startupAppsUserCombo_, uiFont_);
         applyFont(startupAppsModeLabel_, uiBoldFont_);
         applyFont(startupAppsModeCombo_, uiFont_);
         applyFont(startupAppsRefreshButton_, uiBoldFont_);
@@ -2998,13 +3033,22 @@ namespace utm::ui
         MoveWindow(startupAppsHint_, contentX, bodyTop + 24, contentWidth, 24, TRUE);
 
         const int startupSearchTop = bodyTop + 50;
-        const int startupModeWidth = (std::max)(150, (std::min)(210, contentWidth / 3));
+        const int startupModeWidth = (std::max)(130, (std::min)(180, contentWidth / 5));
+        const int startupUserWidth = (std::max)(170, (std::min)(260, contentWidth / 4));
+        const int startupModeLabelWidth = 42;
+        const int startupUserLabelWidth = 36;
+        const int startupModeX = contentX + contentWidth - startupModeWidth;
+        const int startupModeLabelX = startupModeX - startupModeLabelWidth - 6;
+        const int startupUserX = startupModeLabelX - startupUserWidth - 8;
+        const int startupUserLabelX = startupUserX - startupUserLabelWidth - 6;
         MoveWindow(startupAppsSearchLabel_, contentX, startupSearchTop + 3, 56, 22, TRUE);
-        MoveWindow(startupAppsModeLabel_, contentX + contentWidth - startupModeWidth - 48, startupSearchTop + 3, 42, 22, TRUE);
-        MoveWindow(startupAppsModeCombo_, contentX + contentWidth - startupModeWidth, startupSearchTop, startupModeWidth, 220, TRUE);
+        MoveWindow(startupAppsUserLabel_, startupUserLabelX, startupSearchTop + 3, startupUserLabelWidth, 22, TRUE);
+        MoveWindow(startupAppsUserCombo_, startupUserX, startupSearchTop, startupUserWidth, 220, TRUE);
+        MoveWindow(startupAppsModeLabel_, startupModeLabelX, startupSearchTop + 3, startupModeLabelWidth, 22, TRUE);
+        MoveWindow(startupAppsModeCombo_, startupModeX, startupSearchTop, startupModeWidth, 220, TRUE);
 
         const int startupSearchLeft = contentX + 58;
-        const int startupSearchRight = contentX + contentWidth - startupModeWidth - 54;
+        const int startupSearchRight = startupUserLabelX - 8;
         MoveWindow(startupAppsSearchEdit_, startupSearchLeft, startupSearchTop, (std::max)(120, startupSearchRight - startupSearchLeft), 28, TRUE);
 
         const int startupActionTop = startupSearchTop + 34;
@@ -3247,6 +3291,8 @@ namespace utm::ui
         ShowWindow(startupAppsHint_, startupTab ? SW_SHOW : SW_HIDE);
         ShowWindow(startupAppsSearchLabel_, startupTab ? SW_SHOW : SW_HIDE);
         ShowWindow(startupAppsSearchEdit_, startupTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(startupAppsUserLabel_, startupTab ? SW_SHOW : SW_HIDE);
+        ShowWindow(startupAppsUserCombo_, startupTab ? SW_SHOW : SW_HIDE);
         ShowWindow(startupAppsModeLabel_, startupTab ? SW_SHOW : SW_HIDE);
         ShowWindow(startupAppsModeCombo_, startupTab ? SW_SHOW : SW_HIDE);
         ShowWindow(startupAppsRefreshButton_, startupTab ? SW_SHOW : SW_HIDE);

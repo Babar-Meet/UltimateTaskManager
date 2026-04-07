@@ -1,6 +1,7 @@
 #include "system/startup/StartupAppsManager.h"
 
 #include "system/startup/StartupApprovalStore.h"
+#include "system/startup/StartupProfileDiscovery.h"
 
 #include <knownfolders.h>
 #include <shlobj.h>
@@ -8,6 +9,7 @@
 #include <algorithm>
 #include <cwctype>
 #include <filesystem>
+#include <iterator>
 #include <sstream>
 #include <vector>
 
@@ -15,6 +17,15 @@ namespace
 {
     constexpr const wchar_t *kRunPath = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
     constexpr const wchar_t *kRunPathWow6432 = L"Software\\Wow6432Node\\Microsoft\\Windows\\CurrentVersion\\Run";
+
+    constexpr const wchar_t *kApprovedRunPath = L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run";
+    constexpr const wchar_t *kApprovedRun32Path = L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run32";
+    constexpr const wchar_t *kApprovedStartupFolderPath = L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\StartupFolder";
+
+    constexpr const wchar_t *kTargetCurrentUser = L"current-user";
+    constexpr const wchar_t *kTargetSystemWide = L"system";
+    constexpr const wchar_t *kTargetAllUsers = L"all-users";
+    constexpr const wchar_t *kTargetSidPrefix = L"sid:";
 
     class ScopedRegistryKey
     {
@@ -45,9 +56,56 @@ namespace
         HKEY key_ = nullptr;
     };
 
+    struct StartupEntryContext
+    {
+        utm::system::startup::StartupScope scope = utm::system::startup::StartupScope::CurrentUser;
+        std::wstring scopeText;
+        std::wstring userName;
+        std::wstring userSid;
+        bool canToggle = true;
+        bool suppressOpenError = false;
+    };
+
+    enum class StartupTargetKind
+    {
+        CurrentUser,
+        SystemWide,
+        AllUsers,
+        SpecificSid
+    };
+
+    struct ParsedStartupTarget
+    {
+        StartupTargetKind kind = StartupTargetKind::CurrentUser;
+        std::wstring sid;
+    };
+
+    std::wstring ToLowerText(const std::wstring &value)
+    {
+        std::wstring lowered = value;
+        std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](wchar_t ch)
+                       { return static_cast<wchar_t>(std::towlower(ch)); });
+        return lowered;
+    }
+
     std::wstring RootToText(HKEY root)
     {
-        return root == HKEY_CURRENT_USER ? L"HKCU" : L"HKLM";
+        if (root == HKEY_CURRENT_USER)
+        {
+            return L"HKCU";
+        }
+
+        if (root == HKEY_LOCAL_MACHINE)
+        {
+            return L"HKLM";
+        }
+
+        if (root == HKEY_USERS)
+        {
+            return L"HKU";
+        }
+
+        return L"Registry";
     }
 
     std::wstring Win32ErrorToText(DWORD error)
@@ -183,10 +241,103 @@ namespace
         return L"";
     }
 
+    std::wstring SourceToApprovalPath(utm::system::startup::StartupSource source)
+    {
+        switch (source)
+        {
+        case utm::system::startup::StartupSource::RegistryRun:
+            return kApprovedRunPath;
+        case utm::system::startup::StartupSource::RegistryRun32:
+            return kApprovedRun32Path;
+        case utm::system::startup::StartupSource::StartupFolder:
+            return kApprovedStartupFolderPath;
+        default:
+            return kApprovedRunPath;
+        }
+    }
+
+    bool ReadStartupApprovedForSpecificUser(
+        const std::wstring &sid,
+        utm::system::startup::StartupSource source,
+        const std::wstring &valueName,
+        bool &enabled)
+    {
+        enabled = true;
+        if (sid.empty() || valueName.empty())
+        {
+            return false;
+        }
+
+        const std::wstring approvalPath = sid + L"\\" + SourceToApprovalPath(source);
+
+        HKEY key = nullptr;
+        const LONG openResult = RegOpenKeyExW(HKEY_USERS, approvalPath.c_str(), 0, KEY_QUERY_VALUE, &key);
+        if (openResult == ERROR_FILE_NOT_FOUND || openResult == ERROR_ACCESS_DENIED)
+        {
+            return false;
+        }
+
+        if (openResult != ERROR_SUCCESS)
+        {
+            return false;
+        }
+
+        ScopedRegistryKey scopedKey(key);
+
+        DWORD type = 0;
+        BYTE data[16]{};
+        DWORD dataSize = static_cast<DWORD>(sizeof(data));
+        const LONG queryResult = RegQueryValueExW(
+            scopedKey.Get(),
+            valueName.c_str(),
+            nullptr,
+            &type,
+            data,
+            &dataSize);
+
+        if (queryResult != ERROR_SUCCESS || type != REG_BINARY || dataSize == 0)
+        {
+            return false;
+        }
+
+        const BYTE state = data[0];
+        enabled = state == 0x02 || state == 0x06;
+        return true;
+    }
+
+    std::wstring ResolveCurrentUserName()
+    {
+        wchar_t buffer[256]{};
+        DWORD size = static_cast<DWORD>(std::size(buffer));
+        if (GetUserNameW(buffer, &size) && size > 1)
+        {
+            return std::wstring(buffer, size - 1);
+        }
+
+        return L"Current User";
+    }
+
+    bool QueryKnownFolderPath(REFKNOWNFOLDERID folderId, std::wstring &folderPath)
+    {
+        folderPath.clear();
+
+        PWSTR path = nullptr;
+        const HRESULT hr = SHGetKnownFolderPath(folderId, KF_FLAG_DEFAULT, nullptr, &path);
+        if (FAILED(hr) || !path)
+        {
+            return false;
+        }
+
+        folderPath = path;
+        CoTaskMemFree(path);
+        return !folderPath.empty();
+    }
+
     void EnumerateRunKey(
         HKEY root,
         const std::wstring &runPath,
         utm::system::startup::StartupSource source,
+        const StartupEntryContext &context,
         std::vector<utm::system::startup::StartupAppEntry> &entries,
         std::wstring &errorText)
     {
@@ -199,7 +350,7 @@ namespace
 
         if (openResult != ERROR_SUCCESS)
         {
-            if (errorText.empty())
+            if (!context.suppressOpenError && errorText.empty())
             {
                 errorText = L"RegOpenKeyEx failed for " + RootToText(root) + L"\\" + runPath + L". LastError=" + Win32ErrorToText(static_cast<DWORD>(openResult));
             }
@@ -227,7 +378,7 @@ namespace
 
         if (queryInfoResult != ERROR_SUCCESS)
         {
-            if (errorText.empty())
+            if (!context.suppressOpenError && errorText.empty())
             {
                 errorText = L"RegQueryInfoKey failed for startup entries. LastError=" + Win32ErrorToText(static_cast<DWORD>(queryInfoResult));
             }
@@ -270,34 +421,48 @@ namespace
             }
 
             const wchar_t *rawData = reinterpret_cast<const wchar_t *>(dataBuffer.data());
-            const size_t rawLength = dataLen >= sizeof(wchar_t) ? (dataLen / sizeof(wchar_t)) - 1 : 0;
-            const std::wstring rawCommand(rawData ? rawData : L"", rawLength);
+            size_t charLength = dataLen / sizeof(wchar_t);
+            if (charLength > 0 && rawData[charLength - 1] == L'\0')
+            {
+                --charLength;
+            }
+
+            const std::wstring rawCommand(rawData ? rawData : L"", charLength);
             const std::wstring displayCommand = type == REG_EXPAND_SZ ? ExpandEnvironmentString(rawCommand) : rawCommand;
 
-            const utm::system::startup::StartupScope scope =
-                root == HKEY_CURRENT_USER
-                    ? utm::system::startup::StartupScope::CurrentUser
-                    : utm::system::startup::StartupScope::AllUsers;
-
             bool enabled = true;
-            std::wstring approvalError;
-            if (!utm::system::startup::detail::ReadStartupApproved(scope, source, valueName, enabled, approvalError))
+            if (context.scope == utm::system::startup::StartupScope::SpecificUser)
             {
-                enabled = true;
+                ReadStartupApprovedForSpecificUser(context.userSid, source, valueName, enabled);
+            }
+            else
+            {
+                std::wstring approvalError;
+                if (!utm::system::startup::detail::ReadStartupApproved(context.scope, source, valueName, enabled, approvalError))
+                {
+                    enabled = true;
+                }
             }
 
             utm::system::startup::StartupAppEntry entry{};
-            entry.scope = scope;
+            entry.scope = context.scope;
             entry.source = source;
             entry.name = valueName;
             entry.command = displayCommand;
             entry.startupType = utm::system::startup::detail::SourceToTypeText(source);
-            entry.scopeText = utm::system::startup::detail::ScopeToText(scope);
+            entry.scopeText = context.scopeText.empty() ? utm::system::startup::detail::ScopeToText(context.scope) : context.scopeText;
+            entry.ownerUser = context.userName;
+            entry.ownerSid = context.userSid;
             entry.sourceLocation = RootToText(root) + L"\\" + runPath;
             entry.enabled = enabled;
             entry.statusText = enabled ? L"Enabled" : L"Disabled";
             entry.approvalValueName = valueName;
+            entry.canToggle = context.canToggle;
             entry.id = entry.sourceLocation + L"|" + valueName;
+            if (!context.userSid.empty())
+            {
+                entry.id += L"|" + context.userSid;
+            }
 
             entry.locationPath = GuessExecutablePathFromCommand(displayCommand);
             entry.canOpenLocation = !entry.locationPath.empty();
@@ -306,25 +471,9 @@ namespace
         }
     }
 
-    bool QueryKnownFolderPath(REFKNOWNFOLDERID folderId, std::wstring &folderPath)
-    {
-        folderPath.clear();
-
-        PWSTR path = nullptr;
-        const HRESULT hr = SHGetKnownFolderPath(folderId, KF_FLAG_DEFAULT, nullptr, &path);
-        if (FAILED(hr) || !path)
-        {
-            return false;
-        }
-
-        folderPath = path;
-        CoTaskMemFree(path);
-        return !folderPath.empty();
-    }
-
     void EnumerateStartupFolder(
         const std::wstring &folderPath,
-        utm::system::startup::StartupScope scope,
+        const StartupEntryContext &context,
         std::vector<utm::system::startup::StartupAppEntry> &entries)
     {
         std::error_code ec;
@@ -349,31 +498,192 @@ namespace
             const std::wstring filePath = item.path().wstring();
 
             bool enabled = true;
-            std::wstring approvalError;
-            utm::system::startup::detail::ReadStartupApproved(
-                scope,
-                utm::system::startup::StartupSource::StartupFolder,
-                fileName,
-                enabled,
-                approvalError);
+            if (context.scope == utm::system::startup::StartupScope::SpecificUser)
+            {
+                ReadStartupApprovedForSpecificUser(context.userSid, utm::system::startup::StartupSource::StartupFolder, fileName, enabled);
+            }
+            else
+            {
+                std::wstring approvalError;
+                utm::system::startup::detail::ReadStartupApproved(
+                    context.scope,
+                    utm::system::startup::StartupSource::StartupFolder,
+                    fileName,
+                    enabled,
+                    approvalError);
+            }
 
             utm::system::startup::StartupAppEntry entry{};
-            entry.scope = scope;
+            entry.scope = context.scope;
             entry.source = utm::system::startup::StartupSource::StartupFolder;
             entry.name = item.path().stem().wstring();
             entry.command = filePath;
             entry.startupType = utm::system::startup::detail::SourceToTypeText(entry.source);
-            entry.scopeText = utm::system::startup::detail::ScopeToText(scope);
+            entry.scopeText = context.scopeText.empty() ? utm::system::startup::detail::ScopeToText(context.scope) : context.scopeText;
+            entry.ownerUser = context.userName;
+            entry.ownerSid = context.userSid;
             entry.sourceLocation = folderPath;
             entry.enabled = enabled;
             entry.statusText = enabled ? L"Enabled" : L"Disabled";
             entry.approvalValueName = fileName;
             entry.id = folderPath + L"|" + fileName;
+            if (!context.userSid.empty())
+            {
+                entry.id += L"|" + context.userSid;
+            }
             entry.locationPath = filePath;
             entry.canOpenLocation = true;
+            entry.canToggle = context.canToggle;
 
             entries.push_back(std::move(entry));
         }
+    }
+
+    void AppendCurrentUserEntries(std::vector<utm::system::startup::StartupAppEntry> &entries, std::wstring &errorText)
+    {
+        StartupEntryContext context{};
+        context.scope = utm::system::startup::StartupScope::CurrentUser;
+        context.scopeText = L"Current User";
+        context.userName = ResolveCurrentUserName();
+        context.canToggle = true;
+
+        EnumerateRunKey(HKEY_CURRENT_USER, kRunPath, utm::system::startup::StartupSource::RegistryRun, context, entries, errorText);
+
+        std::wstring userStartupPath;
+        if (!QueryKnownFolderPath(FOLDERID_Startup, userStartupPath))
+        {
+            userStartupPath = ExpandEnvironmentString(L"%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\Startup");
+        }
+
+        if (!userStartupPath.empty())
+        {
+            EnumerateStartupFolder(userStartupPath, context, entries);
+        }
+    }
+
+    void AppendSystemEntries(std::vector<utm::system::startup::StartupAppEntry> &entries, std::wstring &errorText)
+    {
+        StartupEntryContext context{};
+        context.scope = utm::system::startup::StartupScope::AllUsers;
+        context.scopeText = L"All Users (System)";
+        context.userName = L"System";
+        context.canToggle = true;
+
+        EnumerateRunKey(HKEY_LOCAL_MACHINE, kRunPath, utm::system::startup::StartupSource::RegistryRun, context, entries, errorText);
+        EnumerateRunKey(HKEY_LOCAL_MACHINE, kRunPathWow6432, utm::system::startup::StartupSource::RegistryRun32, context, entries, errorText);
+
+        std::wstring commonStartupPath;
+        if (!QueryKnownFolderPath(FOLDERID_CommonStartup, commonStartupPath))
+        {
+            commonStartupPath = ExpandEnvironmentString(L"%ProgramData%\\Microsoft\\Windows\\Start Menu\\Programs\\Startup");
+        }
+
+        if (!commonStartupPath.empty())
+        {
+            EnumerateStartupFolder(commonStartupPath, context, entries);
+        }
+    }
+
+    void AppendSpecificUserEntries(
+        const utm::system::startup::detail::StartupProfile &profile,
+        std::vector<utm::system::startup::StartupAppEntry> &entries,
+        std::wstring &errorText)
+    {
+        if (profile.isCurrentUser)
+        {
+            AppendCurrentUserEntries(entries, errorText);
+            return;
+        }
+
+        StartupEntryContext context{};
+        context.scope = utm::system::startup::StartupScope::SpecificUser;
+        context.scopeText = L"User: " + profile.accountName;
+        context.userName = profile.accountName;
+        context.userSid = profile.sid;
+        context.canToggle = false;
+        context.suppressOpenError = true;
+
+        if (profile.hiveLoaded && !profile.sid.empty())
+        {
+            const std::wstring runPath = profile.sid + L"\\" + kRunPath;
+            EnumerateRunKey(HKEY_USERS, runPath, utm::system::startup::StartupSource::RegistryRun, context, entries, errorText);
+        }
+
+        const std::wstring startupFolderPath = utm::system::startup::detail::BuildStartupFolderPath(profile.profilePath);
+        if (!startupFolderPath.empty())
+        {
+            EnumerateStartupFolder(startupFolderPath, context, entries);
+        }
+    }
+
+    ParsedStartupTarget ParseTargetId(const std::wstring &targetId)
+    {
+        ParsedStartupTarget parsed{};
+
+        const std::wstring lowered = ToLowerText(targetId);
+        if (lowered.empty() || lowered == kTargetCurrentUser)
+        {
+            parsed.kind = StartupTargetKind::CurrentUser;
+            return parsed;
+        }
+
+        if (lowered == kTargetSystemWide)
+        {
+            parsed.kind = StartupTargetKind::SystemWide;
+            return parsed;
+        }
+
+        if (lowered == kTargetAllUsers)
+        {
+            parsed.kind = StartupTargetKind::AllUsers;
+            return parsed;
+        }
+
+        if (lowered.rfind(kTargetSidPrefix, 0) == 0)
+        {
+            parsed.kind = StartupTargetKind::SpecificSid;
+            parsed.sid = targetId.substr(std::wcslen(kTargetSidPrefix));
+            return parsed;
+        }
+
+        parsed.kind = StartupTargetKind::CurrentUser;
+        return parsed;
+    }
+
+    const utm::system::startup::detail::StartupProfile *FindProfileBySid(
+        const std::vector<utm::system::startup::detail::StartupProfile> &profiles,
+        const std::wstring &sid)
+    {
+        const std::wstring loweredSid = ToLowerText(sid);
+        for (const auto &profile : profiles)
+        {
+            if (ToLowerText(profile.sid) == loweredSid)
+            {
+                return &profile;
+            }
+        }
+
+        return nullptr;
+    }
+
+    void SortEntries(std::vector<utm::system::startup::StartupAppEntry> &entries)
+    {
+        std::sort(entries.begin(), entries.end(), [](const utm::system::startup::StartupAppEntry &left, const utm::system::startup::StartupAppEntry &right)
+                  {
+                      const std::wstring leftOwner = left.ownerUser.empty() ? left.scopeText : left.ownerUser;
+                      const std::wstring rightOwner = right.ownerUser.empty() ? right.scopeText : right.ownerUser;
+
+                      if (leftOwner == rightOwner)
+                      {
+                          if (left.name == right.name)
+                          {
+                              return left.sourceLocation < right.sourceLocation;
+                          }
+
+                          return left.name < right.name;
+                      }
+
+                      return leftOwner < rightOwner; });
     }
 
 } // namespace
@@ -381,41 +691,121 @@ namespace
 namespace utm::system::startup
 {
 
-    bool StartupAppsManager::EnumerateStartupApps(std::vector<StartupAppEntry> &entries, std::wstring &errorText)
+    bool StartupAppsManager::EnumerateStartupUserTargets(std::vector<StartupUserTarget> &targets, std::wstring &errorText)
+    {
+        targets.clear();
+        errorText.clear();
+
+        std::vector<detail::StartupProfile> profiles;
+        std::wstring profileError;
+        detail::EnumerateStartupProfiles(profiles, profileError);
+
+        std::wstring currentUserLabel = L"Current User";
+        for (const auto &profile : profiles)
+        {
+            if (profile.isCurrentUser && !profile.accountName.empty())
+            {
+                currentUserLabel += L" (" + profile.accountName + L")";
+                break;
+            }
+        }
+
+        targets.push_back({kTargetCurrentUser, currentUserLabel});
+        targets.push_back({kTargetSystemWide, L"System Startup (All Users)"});
+        targets.push_back({kTargetAllUsers, L"All Users + System"});
+
+        for (const auto &profile : profiles)
+        {
+            if (profile.isCurrentUser || profile.sid.empty())
+            {
+                continue;
+            }
+
+            StartupUserTarget target{};
+            target.id = std::wstring(kTargetSidPrefix) + profile.sid;
+            target.displayName = profile.accountName.empty() ? profile.sid : profile.accountName;
+            if (!profile.hiveLoaded)
+            {
+                target.displayName += L" (folder only)";
+            }
+
+            targets.push_back(std::move(target));
+        }
+
+        errorText = profileError;
+        return true;
+    }
+
+    bool StartupAppsManager::EnumerateStartupApps(std::vector<StartupAppEntry> &entries, std::wstring &errorText, const std::wstring &targetId)
     {
         entries.clear();
         errorText.clear();
 
-        EnumerateRunKey(HKEY_CURRENT_USER, kRunPath, StartupSource::RegistryRun, entries, errorText);
-        EnumerateRunKey(HKEY_LOCAL_MACHINE, kRunPath, StartupSource::RegistryRun, entries, errorText);
-        EnumerateRunKey(HKEY_LOCAL_MACHINE, kRunPathWow6432, StartupSource::RegistryRun32, entries, errorText);
+        const ParsedStartupTarget target = ParseTargetId(targetId);
 
-        std::wstring userStartupPath;
-        if (QueryKnownFolderPath(FOLDERID_Startup, userStartupPath))
+        if (target.kind == StartupTargetKind::CurrentUser)
         {
-            EnumerateStartupFolder(userStartupPath, StartupScope::CurrentUser, entries);
+            AppendCurrentUserEntries(entries, errorText);
+        }
+        else if (target.kind == StartupTargetKind::SystemWide)
+        {
+            AppendSystemEntries(entries, errorText);
+        }
+        else
+        {
+            std::vector<detail::StartupProfile> profiles;
+            std::wstring profileError;
+            detail::EnumerateStartupProfiles(profiles, profileError);
+
+            if (target.kind == StartupTargetKind::AllUsers)
+            {
+                AppendCurrentUserEntries(entries, errorText);
+                AppendSystemEntries(entries, errorText);
+
+                for (const auto &profile : profiles)
+                {
+                    if (!profile.isCurrentUser)
+                    {
+                        AppendSpecificUserEntries(profile, entries, errorText);
+                    }
+                }
+            }
+            else if (target.kind == StartupTargetKind::SpecificSid)
+            {
+                const detail::StartupProfile *profile = FindProfileBySid(profiles, target.sid);
+                if (profile)
+                {
+                    AppendSpecificUserEntries(*profile, entries, errorText);
+                }
+                else if (!target.sid.empty())
+                {
+                    StartupEntryContext context{};
+                    context.scope = StartupScope::SpecificUser;
+                    context.scopeText = L"User: " + target.sid;
+                    context.userName = target.sid;
+                    context.userSid = target.sid;
+                    context.canToggle = false;
+                    context.suppressOpenError = true;
+
+                    const std::wstring runPath = target.sid + L"\\" + kRunPath;
+                    EnumerateRunKey(HKEY_USERS, runPath, StartupSource::RegistryRun, context, entries, errorText);
+                }
+            }
         }
 
-        std::wstring commonStartupPath;
-        if (QueryKnownFolderPath(FOLDERID_CommonStartup, commonStartupPath))
-        {
-            EnumerateStartupFolder(commonStartupPath, StartupScope::AllUsers, entries);
-        }
-
-        std::sort(entries.begin(), entries.end(), [](const StartupAppEntry &left, const StartupAppEntry &right)
-                  {
-                      if (left.name == right.name)
-                      {
-                          return left.sourceLocation < right.sourceLocation;
-                      }
-                      return left.name < right.name; });
-
+        SortEntries(entries);
         return true;
     }
 
     bool StartupAppsManager::SetStartupEnabled(const StartupAppEntry &entry, bool enable, std::wstring &errorText)
     {
         errorText.clear();
+
+        if (!entry.canToggle || entry.scope == StartupScope::SpecificUser)
+        {
+            errorText = L"This startup entry belongs to another user profile and cannot be toggled from the current session.";
+            return false;
+        }
 
         if (entry.approvalValueName.empty())
         {
