@@ -5534,10 +5534,26 @@ namespace utm::ui
                 heading = L"All Graphs (scroll with mouse wheel)";
 
                 cards.push_back({L"CPU Total", &cpuHistory_, totalCpuPercent_, 100.0, RGB(30, 120, 230), L"%", true});
+
+                constexpr COLORREF kCorePalette[] = {
+                    RGB(68, 128, 245), RGB(25, 173, 123), RGB(130, 102, 246), RGB(229, 140, 28),
+                    RGB(210, 84, 109), RGB(23, 163, 203), RGB(163, 119, 230), RGB(94, 138, 40)};
+                for (size_t idx = 0; idx < performanceCoreHistory_.size(); ++idx)
+                {
+                    double usageValue = 0.0;
+                    if (idx < performanceCoreUsage_.size())
+                    {
+                        usageValue = performanceCoreUsage_[idx];
+                    }
+                    const COLORREF color = kCorePalette[idx % (sizeof(kCorePalette) / sizeof(kCorePalette[0]))];
+                    cards.push_back({L"Core " + std::to_wstring(idx), &performanceCoreHistory_[idx], usageValue, 100.0, color, L"%", true});
+                }
+
                 cards.push_back({L"Memory In Use", &memoryHistory_, memoryUsedGb_, (std::max)(1.0, memoryAxisTopGb_), RGB(16, 166, 115), L"GB", false});
                 cards.push_back({L"Memory Available", &memoryAvailableHistory_, memoryAvailableGb_, (std::max)(1.0, memoryAxisTopGb_), RGB(44, 132, 220), L"GB", false});
                 cards.push_back({L"Disk Read", &diskReadHistory_, diskReadMBps_, (std::max)(1.0, diskReadScaleMBps_), RGB(27, 145, 102), L"MB/s", false});
                 cards.push_back({L"Disk Write", &diskWriteHistory_, diskWriteMBps_, (std::max)(1.0, diskWriteScaleMBps_), RGB(208, 73, 86), L"MB/s", false});
+                cards.push_back({L"Disk Active", &diskActiveHistory_, diskActivePercent_, 100.0, RGB(130, 102, 246), L"%", true});
 
                 for (size_t i = 0; i < networkInterfaces_.size(); ++i)
                 {
@@ -5552,6 +5568,10 @@ namespace utm::ui
                     const auto &gpu = gpuDevices_[i];
                     const COLORREF color = kGpuPalette[i % (sizeof(kGpuPalette) / sizeof(kGpuPalette[0]))];
                     cards.push_back({L"GPU " + std::to_wstring(i + 1) + L" Util", &gpu.utilizationHistory, gpu.utilizationPercent, 100.0, color, L"%", true});
+                    cards.push_back({L"GPU " + std::to_wstring(i + 1) + L" 3D", &gpu3dHistory_, gpu3dPercent_, 100.0, RGB(96, 118, 255), L"%", true});
+                    cards.push_back({L"GPU " + std::to_wstring(i + 1) + L" Copy", &gpuCopyHistory_, gpuCopyPercent_, 100.0, RGB(53, 189, 126), L"%", true});
+                    cards.push_back({L"GPU " + std::to_wstring(i + 1) + L" Dedicated", &gpu.dedicatedHistory, gpu.dedicatedUsedGb, (std::max)(0.5, gpu.dedicatedGb), RGB(166, 81, 223), L"GB", false});
+                    cards.push_back({L"GPU " + std::to_wstring(i + 1) + L" Shared", &gpu.sharedHistory, gpu.sharedUsedGb, (std::max)(0.5, gpu.sharedGb), RGB(52, 144, 236), L"GB", false});
                 }
             }
             else

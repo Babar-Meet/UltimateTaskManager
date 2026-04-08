@@ -587,18 +587,18 @@ namespace utm::ui
                    << L" | CPU: " << FormatCpu(session.cpuPercent)
                    << L" | Memory: " << FormatBytes(session.memoryBytes)
                    << L" | Disk: " << FormatRateMBps(session.diskMBps)
-                     << L" | Processes: " << session.processCount
-                     << L" | Process Scope: " << targetLabel
-                     << L" (" << usersProcessVisibleRows_.size() << L" rows)";
+                   << L" | Processes: " << session.processCount
+                   << L" | Process Scope: " << targetLabel
+                   << L" (" << usersProcessVisibleRows_.size() << L" rows)";
 
-                 if (selectedProcess >= 0)
-                 {
-                  const auto &process = usersProcesses_[static_cast<size_t>(selectedProcess)];
-                  detail << L" | Process: " << process.imageName
-                      << L" (PID " << process.pid << L")"
-                      << L" CPU " << FormatCpu(process.cpuPercent)
-                      << L" Mem " << FormatBytes(process.memoryBytes);
-                 }
+            if (selectedProcess >= 0)
+            {
+                const auto &process = usersProcesses_[static_cast<size_t>(selectedProcess)];
+                detail << L" | Process: " << process.imageName
+                       << L" (PID " << process.pid << L")"
+                       << L" CPU " << FormatCpu(process.cpuPercent)
+                       << L" Mem " << FormatBytes(process.memoryBytes);
+            }
 
             SetWindowTextW(usersStatus_, detail.str().c_str());
         }
